@@ -180,7 +180,10 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
     if (useDB) {
       const res = await pool.query('SELECT data FROM pedidos WHERE id=$1', [id]);
       if (!res.rows.length) return r.status(404).json({ error: 'No encontrado' });
-      p = { ...res.rows[0].data, id };
+      p = {
+  ...res.rows[0].data,
+  id
+};
     } else {
       p = ram.pedidos.find(x => x.id === id);
       if (!p) return r.status(404).json({ error: 'No encontrado' });
