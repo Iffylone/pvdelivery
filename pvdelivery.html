@@ -1240,24 +1240,45 @@ function buscarRepDisponible(latLocal, lngLocal) {
   const ocupados = new Set(
     db.pedidos.filter(p => p.estado === 'camino').map(p => p.repId)
   );
-  const disponibles = db.repartidores.filter(r => r.activo && !ocupados.has(r.id));
+
+  const disponibles = db.repartidores.filter(
+    r => r.activo && !ocupados.has(r.id)
+  );
+
   if (!disponibles.length) return null;
+
   // Si tienen GPS, elegir el más cercano
   const conGPS = disponibles.filter(r => r.lat && r.lng);
+
   if (conGPS.length) {
     conGPS.sort((a,b) =>
       calcDistancia(latLocal, lngLocal, a.lat, a.lng) -
       calcDistancia(latLocal, lngLocal, b.lat, b.lng)
     );
+
     return conGPS[0];
   }
+
   // Sin GPS: elegir el primero disponible
   return disponibles[0];
 }
-  const t = new Date().toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
-  ['relojL','relojR'].forEach(id => { const el = document.getElementById(id); if(el) el.textContent = t; });
+
+// ── RELOJ ────────────────────────────────────────────────
+function actualizarReloj() {
+  const t = new Date().toLocaleTimeString('es', {
+    hour:'2-digit',
+    minute:'2-digit',
+    second:'2-digit'
+  });
+
+  ['relojL','relojR'].forEach(id => {
+    const el = document.getElementById(id);
+    if(el) el.textContent = t;
+  });
 }
 
+setInterval(actualizarReloj, 1000);
+actualizarReloj();
 // ── API ──────────────────────────────────────────────────
 function getApiBase() {
   const custom = localStorage.getItem('servidor_url');
