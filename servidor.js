@@ -155,7 +155,16 @@ app.post('/api/pedidos', async (q, r) => {
       await pool.query("UPDATE config SET value=$1 WHERE key='contador'", [String(id + 1)]);
     } else {
       id = ram.contador++;
-      p = { ...q.body, id, fecha: new Date().toISOString(), estado: 'pendiente', hist: [{ e:'pendiente', h:new Date().toLocaleTimeString() }] };
+      p = {
+  ...q.body,
+  id,
+  fecha: new Date().toISOString(),
+  estado: 'pendiente',
+  hist: [{
+    e:'pendiente',
+    h:new Date().toLocaleTimeString()
+  }]
+};
       ram.pedidos.unshift(p);
     }
     bcastLight({ tipo: 'PEDIDO_NUEVO', pedido: p });
