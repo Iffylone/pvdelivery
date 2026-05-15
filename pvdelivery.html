@@ -2670,6 +2670,7 @@ async function tomarPedido(id) {
     setTimeout(() => abrirGPSInterno(id), 400);
   } catch(e) { toast('Error de conexión','warn'); }
 }
+function renderHistorial() {
   const lista = miEntregados();
   const div = document.getElementById('listaHistorial');
   if (!lista.length) { div.innerHTML='<div class="empty"><div class="empty-ic">✅</div><p>Todavía no entregaste pedidos hoy.</p></div>'; return; }
@@ -3675,14 +3676,6 @@ function nuevoPedidoCli() {
   document.getElementById('cliMenu').style.display = 'block';
   ['cliNom','cliTel','cliDir','cliNotas'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
   renderMenuCli();
-}
-
-async function marcarPedidoRecibidoCli() {
-  if (!cliPedidoId) return;
-  try {
-    await api('PUT', `/pedidos/${cliPedidoId}/estado`, { estado: 'entregado' });
-    toast('✅ ¡Pedido confirmado como recibido!', 'ok');
-  } catch(e) { toast('Error al confirmar', 'warn'); }
 }
 
 async function marcarPedidoRecibidoCli() {
