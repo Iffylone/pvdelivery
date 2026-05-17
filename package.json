@@ -1,0 +1,21 @@
+{
+  "name": "pvdelivery",
+  "version": "2.0.0",
+  "description": "Iffyware Systems — PVDelivery: sistema de pedidos para fast food",
+  "main": "servidor.js",
+  "scripts": {
+    "start": "node servidor.js",
+    "dev": "node --watch servidor.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "mercadopago": "^2.3.0",
+    "pg": "^8.11.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["delivery", "fastfood", "pos", "pedidos", "mercadopago"],
+  "license": "UNLICENSED"
+}
