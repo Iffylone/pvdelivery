@@ -764,6 +764,8 @@ app.get('/api/modo/status', (q, r) => {
 app.get('/api/personalpay/status', (q, r) => {
   r.json({ ok: true, info: 'PersonalPay acepta pagos via QR interoperable BCRA (mismo QR que CVU/CBU). No requiere integración API específica.' });
 });
+const PORT = process.env.PORT || 3000;
+
 async function main() {
   if (useDB) {
     try { await initDB(); }
