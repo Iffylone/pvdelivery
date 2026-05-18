@@ -53,6 +53,8 @@ const WebSocket = require('ws');
 const path      = require('path');
 const crypto    = require('crypto');
 
+const PORT   = process.env.PORT || 3000;
+
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocket.Server({ server });
