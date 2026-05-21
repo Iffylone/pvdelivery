@@ -1,0 +1,19 @@
+{
+  "name": "pvdelivery",
+  "version": "1.0.0",
+  "description": "Iffyware Systems — PVDelivery multi-tenant",
+  "main": "servidor.js",
+  "scripts": {
+    "start": "node servidor.js",
+    "dev": "node --watch servidor.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "mercadopago": "^2.3.0",
+    "pg": "^8.11.3"
+  }
+}
