@@ -984,8 +984,7 @@ select option { background: var(--ink3); }
   <!-- PEDIDOS -->
   <div class="pg" id="pgL-pedidos">
     <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
-      <button class="btn btn-sm" id="fL-activos" onclick="setF('activos')" style="background:var(--teal);color:var(--ink)">Activos</button>
-      <button class="btn btn-sm btn-ghost" id="fL-todos" onclick="setF('todos')">Todos</button>
+      <button class="btn btn-sm" id="fL-todos" onclick="setF('todos')" style="background:var(--teal);color:var(--ink)">Todos</button>
       <button class="btn btn-sm btn-ghost" id="fL-pendiente" onclick="setF('pendiente')">Pendiente</button>
       <button class="btn btn-sm btn-ghost" id="fL-esperando_pago" onclick="setF('esperando_pago')" style="color:var(--amber)">💳 Pago</button>
       <button class="btn btn-sm btn-ghost" id="fL-preparando" onclick="setF('preparando')">Cocina</button>
@@ -1941,7 +1940,7 @@ let ws = null;
 let db = { pedidos:[], productos:[], repartidores:[], promos:[], contador:1, negocio:'Mi Negocio' };
 let rol = null, miRepId = null, miRepNom = null;
 let carrito = [], promoActiva = null;
-let filtro = 'activos', tabL = 'nuevo', tabR = 'activos';
+let filtro = 'todos', tabL = 'nuevo', tabR = 'activos';
 let modalId = null, metodoCobro = 'efectivo';
 let deferredPWA = null;
 
@@ -2116,10 +2115,6 @@ document.addEventListener('visibilitychange', () => {
           const pedActivo = db.pedidos?.find(x => x.id === cliPedidoId);
           if (pedActivo && pedActivo.estado !== 'entregado' && pedActivo.estado !== 'cancelado') {
             mostrarTracking(pedActivo);
-            // Si ya está en camino, forzar tracking GPS inmediatamente
-            if (pedActivo.estado === 'camino') {
-              setTimeout(() => actualizarTracking(pedActivo), 300);
-            }
           } else {
             localStorage.removeItem('cli_pedido_activo');
             cliPedidoId = null;
@@ -2273,13 +2268,6 @@ function handle(msg) {
     db.clientes = db.clientes || [];
     db.pagosSimulados = db.pagosSimulados || [];
     db.comisionTipo = db.comisionTipo || 'por_km';
-    // Si el cliente tiene un pedido activo en camino, mostrar GPS inmediatamente
-    if (rol === 'cliente' && cliPedidoId) {
-      const pc = db.pedidos.find(p => p.id === cliPedidoId);
-      if (pc && pc.estado === 'camino') {
-        setTimeout(() => actualizarTracking(pc), 400);
-      }
-    }
     db.comisionPorMetro = parseFloat(db.comisionPorMetro || '0.60');
     db.comisionFija = parseFloat(db.comisionFija || '0');
     // Sincronizar dirección del local desde DB al localStorage
@@ -2353,14 +2341,7 @@ function handle(msg) {
       if (idx >= 0) db.pedidos[idx] = msg.pedido;
     }
     renderAll(); renderRepAll(); updateSync();
-    if (msg.pedido && rol === 'cliente' && cliPedidoId === msg.pedido.id) {
-      actualizarTracking(msg.pedido);
-      // Si acaba de pasar a camino, forzar visibilidad del bloque GPS
-      if (msg.pedido.estado === 'camino') {
-        const el = document.getElementById('cliTrackingRider');
-        if (el) el.style.display = 'block';
-      }
-    }
+    if (msg.pedido && rol === 'cliente' && cliPedidoId === msg.pedido.id) actualizarTracking(msg.pedido);
     if (msg.pedido && rol === 'local') {
       if (msg.pedido.estado === 'entregado') { toast('🎉 Pedido #' + msg.pedido.id + ' entregado!','ok'); vib(); }
       if (msg.pedido.estado === 'camino')    toast('🛵 Pedido #' + msg.pedido.id + ' en camino','info');
@@ -2382,15 +2363,6 @@ function handle(msg) {
   if (msg.tipo === 'UBICACION_REP') {
     const rep = db.repartidores.find(r => r.id === msg.repId);
     if (rep) { rep.lat = msg.lat; rep.lng = msg.lng; }
-    // ── GPS cliente: actualizar mapa si el cliente tiene un pedido en camino con este rider
-    if (rol === 'cliente' && cliPedidoId) {
-      const pedidoCli = db.pedidos.find(p => p.id === cliPedidoId);
-      if (pedidoCli && pedidoCli.estado === 'camino' && String(pedidoCli.repId) === String(msg.repId)) {
-        iniciarMapaClienteTracking(msg.lat, msg.lng, pedidoCli);
-        const loadEl = document.getElementById('cliMapLoading');
-        if (loadEl) loadEl.style.display = 'none';
-      }
-    }
   }
   if (msg.tipo === 'PAGO_NUEVO') {
     if (msg.pago) {
@@ -2724,22 +2696,6 @@ function activarRep() {
   document.getElementById('repHdrNom').textContent = miRepNom;
   document.getElementById('appRep').classList.add('show');
   renderRepAll(); conectarWS();
-  // Identificarse al servidor como rider y pedir estado actualizado
-  const enviarIdRider = () => {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ tipo: 'IDENTIFICAR_ROL', rol: 'rep', repId: miRepId }));
-      // Pedir estado actualizado inmediatamente
-      api('GET', '/db').then(dbFresh => {
-        if (dbFresh && dbFresh.pedidos) {
-          db = { ...db, ...dbFresh };
-          renderRepAll();
-        }
-      }).catch(()=>{});
-    } else {
-      setTimeout(enviarIdRider, 600);
-    }
-  };
-  setTimeout(enviarIdRider, 700);
   // Iniciar GPS
   setTimeout(iniciarGPS, 1000);
 }
@@ -3264,12 +3220,7 @@ function setF(f) {
 
 function renderPedidos() {
   const div = document.getElementById('listaPedidos');
-  const ESTADOS_ACTIVOS = ['pendiente','preparando','camino','esperando_pago'];
-  const lista = filtro==='todos'
-    ? db.pedidos
-    : filtro==='activos'
-      ? db.pedidos.filter(p => ESTADOS_ACTIVOS.includes(p.estado))
-      : db.pedidos.filter(p => p.estado===filtro);
+  const lista = filtro==='todos' ? db.pedidos : db.pedidos.filter(p => p.estado===filtro);
   if (!lista.length) { div.innerHTML=`<div class="empty"><div class="empty-ic">📭</div><p>Sin pedidos${filtro!=='todos'?' con ese estado':''} por ahora.</p></div>`; return; }
   div.innerHTML = lista.map(p => {
     const ei = ESTADOS.indexOf(p.estado);
@@ -3685,10 +3636,6 @@ function iniciarGPS() {
   gpsWatchId = navigator.geolocation.watchPosition(
     pos => {
       const lat = pos.coords.latitude, lng = pos.coords.longitude;
-      // Enviar por WS (instantáneo) Y por REST (persiste en DB)
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ tipo: 'UBICACION_REP', repId: miRepId, lat, lng }));
-      }
       api('PUT',`/repartidores/${miRepId}/ubicacion`,{ lat, lng });
       // Verificar si el rider llegó al destino (< 80 metros)
       if (gpsPedidoActivo && !_gpsLlegadaNotificado) {
@@ -3887,11 +3834,7 @@ async function delPromo(i) {
 
 // ── RENDER REPARTIDOR ────────────────────────────────────
 function miActivos() { return db.pedidos.filter(p => p.repId==miRepId && p.estado!=='entregado' && p.estado!=='cancelado'); }
-function miEntregados() {
-  // Solo mostrar entregados de las últimas 2 horas para no llenar la pantalla
-  const hace2h = Date.now() - 2 * 60 * 60 * 1000;
-  return db.pedidos.filter(p => p.repId==miRepId && p.estado==='entregado' && (!p.ts || p.ts > hace2h));
-}
+function miEntregados() { return db.pedidos.filter(p => p.repId==miRepId && p.estado==='entregado'); }
 
 function renderActivos() {
   const lista = miActivos().sort((a,b) => ({camino:0,preparando:1,pendiente:2}[a.estado]||9)-({camino:0,preparando:1,pendiente:2}[b.estado]||9));
@@ -5978,10 +5921,8 @@ function actualizarTracking(p) {
   // Tracking tiempo real del rider cuando está en camino
   const riderTrackEl = document.getElementById('cliTrackingRider');
   if (riderTrackEl) {
-    if (p.estado === 'camino') {
+    if (p.estado === 'camino' && p.repNombre) {
       riderTrackEl.style.display = 'block';
-      // repNombre puede estar vacío si el rider no lo cargó — mostrar genérico
-      document.getElementById('cliRiderNombre').textContent = '🛵 ' + (p.repNombre || 'Repartidor en camino');
       document.getElementById('cliRiderNombre').textContent = '🛵 ' + p.repNombre;
       const dirLocal = db.dirLocal || localStorage.getItem('local_direccion') || '';
       const dirCliente = p.dir || '';
@@ -6026,7 +5967,7 @@ function nuevoPedidoCli() {
 async function marcarPedidoRecibidoCli() {
   if (!cliPedidoId) return;
   try {
-    await api('PUT', `/pedidos/${cliPedidoId}/estado`, { estado: 'entregado', ts: Date.now() });
+    await api('PUT', `/pedidos/${cliPedidoId}/estado`, { estado: 'entregado' });
     toast('✅ ¡Pedido confirmado como recibido!', 'ok');
   } catch(e) { toast('Error al confirmar', 'warn'); }
 }
@@ -6851,7 +6792,19 @@ function abrirMapaTrackingCli() {
   if (cliTrackMap) setTimeout(()=>cliTrackMap.invalidateSize(),100);
 }
 
-// GPS cliente manejado dentro de handle() — ver bloque UBICACION_REP
+// Actualizar mapa cliente cuando el rider manda su ubicación por WS
+const _origHandleForCli = window.handle;
+window.handle = function(msg) {
+  if (_origHandleForCli) _origHandleForCli(msg);
+  if (msg.tipo === 'UBICACION_REP' && cliPedidoId) {
+    const pedido = db.pedidos.find(p=>p.id===cliPedidoId);
+    if (pedido?.repId == msg.repId && pedido?.estado === 'camino') {
+      iniciarMapaClienteTracking(msg.lat, msg.lng, pedido);
+      const loadEl = document.getElementById('cliMapLoading');
+      if (loadEl) loadEl.style.display = 'none';
+    }
+  }
+};
 
 
 </script>
