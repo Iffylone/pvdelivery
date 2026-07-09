@@ -52,12 +52,14 @@ const http      = require('http');
 const WebSocket = require('ws');
 const path      = require('path');
 const crypto    = require('crypto');
+const { hashPin, verificarPin, firmarToken, requireAuth, loginLimiter, apiLimiter } = require('./auth');
 
 const PORT   = process.env.PORT || 3000;
 
 const app    = express();
 const server = http.createServer(app);
 const wss    = new WebSocket.Server({ server });
+app.use('/api', apiLimiter);
 
 app.use(express.json({ limit: '10mb' }));
 app.use((q, r, n) => {
@@ -181,25 +183,36 @@ async function initDB() {
   console.log('Base de datos lista.');
 }
 
+// Quita campos sensibles antes de mandar cualquier cosa al navegador.
+// clave/claveAdmin/pin NUNCA deben viajar al cliente, ni por HTTP ni por WS.
+function sinSensibles(db) {
+  const { clave, claveAdmin, ...resto } = db;
+  resto.empleados = (resto.empleados || []).map(({ pin, ...e }) => e);
+  return resto;
+}
+
 async function getDB() {
-  if (!useDB) return {
-    ...ram,
-    pedidos: [...ram.pedidos],
-    cbuLocal: ram.cbuLocal||'',
-    aliasLocal: ram.aliasLocal||'',
-    clientes: [...(ram.clientes||[])],
-    pagosSimulados: [...(ram.pagosSimulados||[])],
-    empleados: [...(ram.empleados||[])],
-    comisionTipo: ram.comisionTipo||'por_km',
-    comisionPorMetro: ram.comisionPorMetro||0.60,
-    comisionFija: ram.comisionFija||0,
-    clave: ram.clave||'1234',
-    claveAdmin: ram.claveAdmin||'9999',
-    turnoActivo: ram.turnoActivo||false,
-    turnoApertura: ram.turnoApertura||null,
-    turnoUsuario: ram.turnoUsuario||null,
-    turnoEfectivoInicial: ram.turnoEfectivoInicial||0
-  };
+  if (!useDB) {
+    const full = {
+      ...ram,
+      pedidos: [...ram.pedidos],
+      cbuLocal: ram.cbuLocal||'',
+      aliasLocal: ram.aliasLocal||'',
+      clientes: [...(ram.clientes||[])],
+      pagosSimulados: [...(ram.pagosSimulados||[])],
+      empleados: [...(ram.empleados||[])],
+      comisionTipo: ram.comisionTipo||'por_km',
+      comisionPorMetro: ram.comisionPorMetro||0.60,
+      comisionFija: ram.comisionFija||0,
+      clave: ram.clave||'1234',
+      claveAdmin: ram.claveAdmin||'9999',
+      turnoActivo: ram.turnoActivo||false,
+      turnoApertura: ram.turnoApertura||null,
+      turnoUsuario: ram.turnoUsuario||null,
+      turnoEfectivoInicial: ram.turnoEfectivoInicial||0
+    };
+    return sinSensibles(full);
+  }
   const [cfg, pr, re, pe, pm, cl, pg, emp] = await Promise.all([
     pool.query('SELECT key,value FROM config'),
     pool.query('SELECT * FROM productos ORDER BY id'),
@@ -212,7 +225,7 @@ async function getDB() {
   ]);
   const config = {};
   cfg.rows.forEach(r => config[r.key] = r.value);
-  return {
+  const full = {
     negocio:        config.negocio || 'Mi Negocio',
     contador:       parseInt(config.contador || '1'),
     codigoLocal:    config.codigoLocal || '',
@@ -231,6 +244,22 @@ async function getDB() {
     clientes:       cl.rows.map(r => r.data),
     pagosSimulados: pg.rows.map(r => r.data),
     empleados:      emp.rows.map(r => r.data)
+  };
+  return sinSensibles(full);
+}
+
+// getDB "interna" — SÍ trae clave/claveAdmin/pin en texto o hash, para
+// usar en verificación server-side. Nunca exponer el resultado directo al cliente.
+async function getDBInterna() {
+  if (!useDB) return { ...ram, empleados: ram.empleados || [] };
+  const cfg = await pool.query('SELECT key,value FROM config');
+  const emp = await pool.query('SELECT data FROM empleados ORDER BY id').catch(()=>({rows:[]}));
+  const config = {};
+  cfg.rows.forEach(r => config[r.key] = r.value);
+  return {
+    clave: config.clave || '1234',
+    claveAdmin: config.claveAdmin || '9999',
+    empleados: emp.rows.map(r => r.data)
   };
 }
 
@@ -309,6 +338,32 @@ setInterval(() => {
 
 app.get('/api/db', async (q, r) => r.json(await getDB()));
 
+// POST /api/auth/login — verifica el PIN del local (operador/admin) y devuelve JWT.
+// Reemplaza la comparación que antes hacía el frontend contra db.clave/db.claveAdmin.
+app.post('/api/auth/login', loginLimiter, async (q, r) => {
+  try {
+    const { pin } = q.body;
+    if (!pin) return r.status(400).json({ ok: false, error: 'PIN requerido' });
+    const interna = await getDBInterna();
+
+    const chkAdmin = verificarPin(pin, interna.claveAdmin);
+    if (chkAdmin.ok) {
+      if (chkAdmin.necesitaRehash && useDB) {
+        await pool.query("INSERT INTO config(key,value) VALUES('claveAdmin',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [hashPin(pin)]);
+      } else if (chkAdmin.necesitaRehash) { ram.claveAdmin = hashPin(pin); }
+      return r.json({ ok: true, rol: 'admin', token: firmarToken({ rol: 'admin' }) });
+    }
+    const chkOp = verificarPin(pin, interna.clave);
+    if (chkOp.ok) {
+      if (chkOp.necesitaRehash && useDB) {
+        await pool.query("INSERT INTO config(key,value) VALUES('clave',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [hashPin(pin)]);
+      } else if (chkOp.necesitaRehash) { ram.clave = hashPin(pin); }
+      return r.json({ ok: true, rol: 'operador', token: firmarToken({ rol: 'operador' }) });
+    }
+    return r.json({ ok: false, error: 'PIN incorrecto' });
+  } catch(e) { r.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Verificar repartidor por ID (para login antes de conectar WS)
 app.get('/api/repartidores/:id/verificar', async (q, r) => {
   try {
@@ -386,7 +441,7 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/pedidos', async (q, r) => {
+app.delete('/api/pedidos', requireAuth('admin'), async (q, r) => {
   try {
     if (useDB) { await pool.query('DELETE FROM pedidos'); await pool.query("UPDATE config SET value='1' WHERE key='contador'"); }
     else { ram.pedidos = []; ram.contador = 1; }
@@ -517,7 +572,7 @@ app.delete('/api/productos/:id', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/config', async (q, r) => {
+app.put('/api/config', requireAuth('admin'), async (q, r) => {
   try {
     if (q.body.negocio !== undefined) {
       if (useDB) await pool.query("UPDATE config SET value=$1 WHERE key='negocio'", [q.body.negocio]);
@@ -550,12 +605,14 @@ app.put('/api/config', async (q, r) => {
       else ram.comisionFija = parseFloat(v);
     }
     if (q.body.clave !== undefined) {
-      if (useDB) await pool.query("INSERT INTO config(key,value) VALUES('clave',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [q.body.clave]);
-      else ram.clave = q.body.clave;
+      const h = hashPin(q.body.clave);
+      if (useDB) await pool.query("INSERT INTO config(key,value) VALUES('clave',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [h]);
+      else ram.clave = h;
     }
     if (q.body.claveAdmin !== undefined) {
-      if (useDB) await pool.query("INSERT INTO config(key,value) VALUES('claveAdmin',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [q.body.claveAdmin]);
-      else ram.claveAdmin = q.body.claveAdmin;
+      const h = hashPin(q.body.claveAdmin);
+      if (useDB) await pool.query("INSERT INTO config(key,value) VALUES('claveAdmin',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [h]);
+      else ram.claveAdmin = h;
     }
     if (q.body.promos) {
       if (useDB) {
@@ -707,9 +764,18 @@ let mpSandbox = true;
       accessToken: token,
       options: { timeout: 10000 }
     });
-    mpSandbox = token.startsWith('TEST-') || process.env.MP_MODO === 'sandbox';
+    // Desde nov-2025, MP puede dar credenciales de PRUEBA con prefijo APP_USR-
+    // (no solo TEST-) según el producto integrado — el prefijo solo ya no alcanza.
+    // Por eso MP_MODO es la fuente de verdad si está definida; el prefijo TEST-
+    // queda solo como respaldo automático cuando no se definió MP_MODO.
+    if (process.env.MP_MODO === 'sandbox') mpSandbox = true;
+    else if (process.env.MP_MODO === 'production') mpSandbox = false;
+    else mpSandbox = token.startsWith('TEST-');
     mpReady = true;
-    console.log(`[MercadoPago] SDK listo — modo: ${mpSandbox ? 'SANDBOX (pruebas)' : 'PRODUCCIÓN'}`);
+    console.log(`[MercadoPago] SDK listo — modo: ${mpSandbox ? 'SANDBOX (pruebas)' : 'PRODUCCIÓN'}${process.env.MP_MODO ? ' (forzado por MP_MODO)' : ' (detectado por prefijo del token)'}`);
+    if (!process.env.MP_MODO && !token.startsWith('TEST-')) {
+      console.warn('[MercadoPago] ⚠️  Token sin prefijo TEST- y sin MP_MODO definida — si esta es una credencial de PRUEBA, definí MP_MODO=sandbox para evitar ambigüedad.');
+    }
   } catch(e) {
     console.warn('[MercadoPago] SDK no instalado. Ejecutá: npm install mercadopago');
     console.warn('  Detalle:', e.message);
@@ -775,7 +841,10 @@ app.post('/api/mp/preference', async (q, r) => {
     const response = await prefApi.create({ body: preferenceData });
 
     // Guardar referencia del pedido
-    const initPoint = mpSandbox ? response.sandbox_init_point : response.init_point;
+    // Fallback: si mpSandbox=true pero MP no devolvió sandbox_init_point
+    // (pasa con credenciales de prueba tipo APP_USR- del modelo Orders nuevo),
+    // usar init_point igual — la credencial de prueba ya impide cobros reales.
+    const initPoint = (mpSandbox && response.sandbox_init_point) ? response.sandbox_init_point : response.init_point;
     console.log(`[MP] Preferencia creada: ${response.id} — ${initPoint}`);
 
     r.json({
@@ -901,23 +970,25 @@ app.get('/api/personalpay/status', (q, r) => {
   r.json({ ok: true, info: 'PersonalPay acepta pagos via QR interoperable BCRA (mismo QR que CVU/CBU). No requiere integración API específica.' });
 });
 // ── EMPLEADOS (PIN de 4 dígitos, roles: cajero/cocinero/gerente) ──
-app.get('/api/empleados', async (q, r) => {
+app.get('/api/empleados', requireAuth('admin'), async (q, r) => {
   try {
+    let lista;
     if (useDB) {
       const res = await pool.query('SELECT data FROM empleados ORDER BY id');
-      r.json(res.rows.map(x => x.data));
+      lista = res.rows.map(x => x.data);
     } else {
-      r.json(ram.empleados || []);
+      lista = ram.empleados || [];
     }
+    r.json(lista.map(({ pin, ...e }) => e));
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/empleados', async (q, r) => {
+app.post('/api/empleados', requireAuth('admin'), async (q, r) => {
   try {
     const { nombre, rol, pin, foto } = q.body;
     if (!nombre || !pin || String(pin).length !== 4) return r.status(400).json({ error: 'Nombre y PIN de 4 dígitos requeridos' });
     const id = Date.now();
-    const emp = { id, nombre, rol: rol || 'cajero', pin: String(pin), activo: true, foto: foto||null, creadoEn: new Date().toISOString() };
+    const emp = { id, nombre, rol: rol || 'cajero', pin: hashPin(pin), activo: true, foto: foto||null, creadoEn: new Date().toISOString() };
     if (useDB) {
       await pool.query('ALTER TABLE empleados ADD COLUMN IF NOT EXISTS data JSONB').catch(()=>{});
       await pool.query('INSERT INTO empleados(id,data) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET data=$2', [id, JSON.stringify(emp)]);
@@ -926,11 +997,12 @@ app.post('/api/empleados', async (q, r) => {
       ram.empleados.push(emp);
     }
     await bcast('DATOS_ACTUALIZADOS', {});
-    r.json({ ok: true, empleado: emp });
+    const { pin: _p, ...empSinPin } = emp;
+    r.json({ ok: true, empleado: empSinPin });
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/empleados/:id', async (q, r) => {
+app.put('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     const { nombre, rol, pin, activo } = q.body;
@@ -945,15 +1017,16 @@ app.put('/api/empleados/:id', async (q, r) => {
     }
     if (nombre !== undefined) emp.nombre = nombre;
     if (rol !== undefined) emp.rol = rol;
-    if (pin !== undefined) emp.pin = String(pin);
+    if (pin !== undefined) emp.pin = hashPin(pin);
     if (activo !== undefined) emp.activo = activo;
     if (useDB) await pool.query('UPDATE empleados SET data=$1 WHERE id=$2', [JSON.stringify(emp), id]);
     await bcast('DATOS_ACTUALIZADOS', {});
-    r.json({ ok: true, empleado: emp });
+    const { pin: _p, ...empSinPin } = emp;
+    r.json({ ok: true, empleado: empSinPin });
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/empleados/:id', async (q, r) => {
+app.delete('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     if (useDB) await pool.query('DELETE FROM empleados WHERE id=$1', [id]);
@@ -963,8 +1036,8 @@ app.delete('/api/empleados/:id', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-// POST /api/empleados/login — verifica PIN y devuelve el empleado
-app.post('/api/empleados/login', async (q, r) => {
+// POST /api/empleados/login — verifica PIN (hash bcrypt) y devuelve JWT + empleado.
+app.post('/api/empleados/login', loginLimiter, async (q, r) => {
   try {
     const { pin } = q.body;
     if (!pin) return r.status(400).json({ ok: false, error: 'PIN requerido' });
@@ -975,14 +1048,39 @@ app.post('/api/empleados/login', async (q, r) => {
     } else {
       emps = ram.empleados || [];
     }
-    const emp = emps.find(e => e.pin === String(pin) && e.activo !== false);
-    if (!emp) return r.json({ ok: false, error: 'PIN incorrecto o empleado inactivo' });
-    r.json({ ok: true, empleado: emp });
+    let encontrado = null;
+    for (const e of emps) {
+      if (e.activo === false) continue;
+      const chk = verificarPin(pin, e.pin);
+      if (chk.ok) { encontrado = e; if (chk.necesitaRehash) e.pin = hashPin(pin); break; }
+    }
+    if (!encontrado) return r.json({ ok: false, error: 'PIN incorrecto o empleado inactivo' });
+    // Persistir el rehash si veníamos de un PIN viejo en texto plano
+    if (useDB) await pool.query('UPDATE empleados SET data=$1 WHERE id=$2', [JSON.stringify(encontrado), encontrado.id]).catch(()=>{});
+    const { pin: _omit, ...empSinPin } = encontrado;
+    const token = firmarToken({ rol: encontrado.rol || 'cajero', empleadoId: encontrado.id });
+    r.json({ ok: true, empleado: empSinPin, token });
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
 // HTML — debe ir al final, después de todas las rutas /api/
+app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.static(path.join(__dirname)));
+
+// /.well-known/assetlinks.json — necesario para que el APK (TWA) de Android
+// se abra sin la barra de direcciones del navegador. El contenido depende
+// del fingerprint SHA256 del certificado con el que se firmó el APK — se
+// completa después de generar el instalador (ver README-instaladores.md).
+// Se define vía variable de entorno ANDROID_ASSETLINKS_JSON (string JSON)
+// para no tener que tocar código por cada cliente/instancia.
+app.get('/.well-known/assetlinks.json', (q, r) => {
+  if (process.env.ANDROID_ASSETLINKS_JSON) {
+    try { return r.json(JSON.parse(process.env.ANDROID_ASSETLINKS_JSON)); }
+    catch(e) { return r.json([]); }
+  }
+  r.json([]);
+});
+
 app.get('*', (q, r) => r.sendFile(path.join(__dirname, 'pvdelivery.html')));
 
 async function main() {
