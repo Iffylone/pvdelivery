@@ -8,7 +8,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="IffyWare fasT">
 <meta name="description" content="Iffyware Systems Systems — Sistema profesional de gestión de pedidos">
-<link rel="manifest" id="pwa-manifest">
+<link rel="manifest" id="pwa-manifest" href="/manifest.json">
 <title>Iffyware Systems Systems</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -2493,11 +2493,19 @@ function getApiBase() {
 }
 async function api(method, path, body) {
   try {
+    const token = sessionStorage.getItem('authToken');
+    const headers = {'Content-Type':'application/json'};
+    if (token) headers['Authorization'] = 'Bearer ' + token;
     const r = await fetch(getApiBase() + '/api' + path, {
       method,
-      headers: {'Content-Type':'application/json'},
+      headers,
       body: body ? JSON.stringify(body) : undefined
     });
+    if (r.status === 401 || r.status === 403) {
+      toast('Sesión expirada — volvé a iniciar sesión', 'warn');
+      sessionStorage.removeItem('authToken');
+      return null;
+    }
     if (!r.ok) { console.error('API error', r.status, path); return null; }
     return r.json();
   } catch(e) {
@@ -2746,8 +2754,7 @@ function activarRep() {
 
 // ── LOGIN LOCAL CON CLAVE ─────────────────────────────────
 function mostrarLoginLocal() {
-  const clave = localStorage.getItem('local_clave') || '1234';
-  // Si no hay clave configurada o ya está autenticado en esta sesión
+  // Si ya está autenticado en esta sesión, entra directo
   if (sessionStorage.getItem('local_auth') === '1') { entrarLocal(); return; }
   document.getElementById('localClaveInput').value = '';
   document.getElementById('localClaveError').style.display = 'none';
@@ -2757,18 +2764,26 @@ function mostrarLoginLocal() {
 async function confirmarLoginLocal() {
   const clave = document.getElementById('localClaveInput').value;
   const usuario = document.getElementById('localUsuarioInput')?.value.trim() || '';
-  const claveAdmin = db.claveAdmin || localStorage.getItem('local_clave_admin') || '9999';
-  const claveLocal = db.clave || localStorage.getItem('local_clave') || '1234';
-  let nivel = null, nombreFinal = usuario;
+  let nivel = null, nombreFinal = usuario, tokenObtenido = null;
 
-  // 1. Verificar contra claves legacy (admin 9999 / cajero 1234)
-  if (clave === claveAdmin) {
-    nivel = 'admin'; nombreFinal = usuario || 'Gerente';
-  } else if (clave === claveLocal) {
-    nivel = 'cajero'; nombreFinal = usuario || 'Cajero';
+  // 1. Verificar contra el PIN de local (operador/admin) — validación server-side
+  if (clave.length >= 3) {
+    try {
+      const res = await fetch(getApiBase() + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pin: clave })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        nivel = data.rol === 'admin' ? 'admin' : 'cajero';
+        nombreFinal = usuario || (nivel === 'admin' ? 'Gerente' : 'Cajero');
+        tokenObtenido = data.token;
+      }
+    } catch(e) { /* sin conexión, seguimos a intentar PIN de empleado */ }
   }
 
-  // 2. Si no coincide con legacy, verificar contra PINs de empleados
+  // 2. Si no coincide con la clave de local, verificar contra PINs de empleados
   if (!nivel && clave.length === 4) {
     try {
       const res = await fetch(getApiBase() + '/api/empleados/login', {
@@ -2779,6 +2794,7 @@ async function confirmarLoginLocal() {
       const data = await res.json();
       if (data.ok && data.empleado) {
         const emp = data.empleado;
+        tokenObtenido = data.token;
         // Gerente en empleados = admin; mozo/administrativo = cajero por defecto (ven pedidos)
         if (emp.rol === 'gerente') nivel = 'admin';
         else if (emp.rol === 'cocinero') nivel = 'cocinero';
@@ -2799,7 +2815,7 @@ async function confirmarLoginLocal() {
         }
       }
     } catch(e) {
-      // Sin conexión: permitir solo legacy
+      // Sin conexión: no se puede autenticar
     }
   }
 
@@ -2807,6 +2823,7 @@ async function confirmarLoginLocal() {
     document.getElementById('localClaveError').style.display = 'block';
     return;
   }
+  if (tokenObtenido) sessionStorage.setItem('authToken', tokenObtenido);
   document.getElementById('localClaveError').style.display = 'none';
   sessionStorage.setItem('local_auth', '1');
   sessionStorage.setItem('local_nivel', nivel);
@@ -2866,19 +2883,29 @@ async function confirmarLoginLocal() {
 function cerrarLoginLocal() {
   document.getElementById('modalLoginLocal').classList.remove('open');
 }
-function cambiarClave() {
+async function cambiarClave() {
   const actual = document.getElementById('claveActual').value;
   const nueva = document.getElementById('claveNueva').value.trim();
-  const guardada = db.clave || localStorage.getItem('local_clave') || '1234';
-  if (actual !== guardada) { toast('❌ Clave actual incorrecta','warn'); return; }
   if (nueva.length < 3) { toast('La nueva clave debe tener al menos 3 caracteres','warn'); return; }
-  // Guardar en servidor y localmente
-  fetch('/api/config', { method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ clave: nueva }) })
-    .then(() => { db.clave = nueva; localStorage.setItem('local_clave', nueva); })
-    .catch(() => { localStorage.setItem('local_clave', nueva); }); // fallback local si no hay red
-  document.getElementById('claveActual').value = '';
-  document.getElementById('claveNueva').value = '';
-  toast('🔐 Clave actualizada correctamente','ok');
+  // Verificar la clave actual contra el servidor (nunca se compara en el cliente)
+  let verOk = false;
+  try {
+    const res = await fetch(getApiBase() + '/api/auth/login', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin: actual })
+    });
+    const data = await res.json();
+    verOk = !!data.ok;
+  } catch(e) {}
+  if (!verOk) { toast('❌ Clave actual incorrecta','warn'); return; }
+  // Usa el token de la sesión activa (requiere rol admin para /api/config)
+  const res2 = await api('PUT', '/config', { clave: nueva });
+  if (res2?.ok) {
+    document.getElementById('claveActual').value = '';
+    document.getElementById('claveNueva').value = '';
+    toast('🔐 Clave actualizada correctamente','ok');
+  } else {
+    toast('❌ Necesitás sesión de administrador para cambiar la clave','warn');
+  }
 }
 
 // ── ASIGNAR REPARTIDOR DESDE COCINA ──────────────────────
@@ -6248,8 +6275,17 @@ function cerrarLoginAdmin() {
 
 async function confirmarLoginAdmin() {
   const clave = document.getElementById('adminClaveInput').value;
-  const claveAdmin = db.claveAdmin || localStorage.getItem('local_clave_admin') || '9999';
-  if (clave !== claveAdmin) {
+  let ok = false;
+  try {
+    const res = await fetch(getApiBase() + '/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: clave })
+    });
+    const data = await res.json();
+    if (data.ok && data.rol === 'admin') { ok = true; sessionStorage.setItem('authToken', data.token); }
+  } catch(e) { /* sin conexión */ }
+  if (!ok) {
     document.getElementById('adminClaveError').style.display = 'block';
     return;
   }
@@ -6536,6 +6572,8 @@ function renderAdminProductos() {
         <div style="font-size:11px;color:var(--t3)">${p.categoria||''}</div>
       </div>
       <span style="font-family:var(--mono);font-size:14px;color:var(--teal)">$${(p.precio||0).toLocaleString()}</span>
+      <button class="btn btn-sm ${p.agotado?'btn-amber':'btn-ghost'}" onclick="toggleAgotado(${p.id})" style="font-size:10px;padding:4px 8px;width:auto">${p.agotado?'↩':'⊘'}</button>
+      <button class="btn btn-sm btn-ghost" onclick="abrirEditarProd(${p.id})" style="font-size:10px;padding:4px 8px;width:auto">✏️</button>
       <button class="rm" onclick="delProdAdmin(${p.id})" style="color:var(--rose)">✕</button>
     </div>`).join('') || '<div style="font-family:var(--mono);font-size:12px;color:var(--t3)">Sin productos.</div>';
 }
@@ -6592,21 +6630,28 @@ async function confirmarImportExcel() {
   if (!filas?.length) return;
   const categoriasValidas = ['principal','bebida','acompanamiento','combo','pizza','empanada','arepa','sandwich','postre','entrada'];
   let ok=0, err=0;
+  const fallidas = [];
   const preview = document.getElementById('excelPreview');
   preview.innerHTML = '<div style="font-family:var(--mono);font-size:12px;color:var(--teal)">Importando productos...</div>';
+  filas.forEach((row, idx) => { row._filaExcel = idx + 2; }); // +2: fila 1 es encabezado, Excel es 1-indexed
   for (const row of filas) {
     const nombre = String(row[0]||'').trim();
     const precio = parseFloat(String(row[1]||'0').replace(/[^0-9.]/g,''))||0;
     const catRaw = String(row[2]||'principal').trim().toLowerCase();
     const categoria = categoriasValidas.includes(catRaw) ? catRaw : 'principal';
     const descripcion = String(row[3]||'').trim();
-    if (!nombre || !precio) { err++; continue; }
+    if (!nombre || !precio) {
+      err++;
+      fallidas.push(`Fila ${row._filaExcel}: ${!nombre ? 'sin nombre' : 'precio inválido ("'+row[1]+'")'}${nombre ? ' — '+nombre : ''}`);
+      continue;
+    }
     const res = await api('POST','/productos',{nombre,precio,categoria,descripcion});
-    if (res?.ok) ok++; else err++;
+    if (res?.ok) ok++; else { err++; fallidas.push(`Fila ${row._filaExcel}: el servidor rechazó "${nombre}" — ${res?.error||'error desconocido'}`); }
     await new Promise(r=>setTimeout(r,50)); // pequeña pausa
   }
   preview.innerHTML = `<div style="background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:8px;padding:12px;font-size:13px;color:var(--teal)">
     ✅ <strong>${ok} productos importados</strong>${err>0?` · ⚠️ ${err} con error`:''}
+    ${fallidas.length ? `<div style="margin-top:8px;font-size:11px;color:var(--amber);font-family:var(--mono)">${fallidas.join('<br>')}</div>` : ''}
   </div>`;
   window._excelFilas = null;
   renderAdminProductos();
@@ -6661,8 +6706,6 @@ async function cambiarClavesAdmin() {
   if (nuevaAdmin) body.claveAdmin = nuevaAdmin;
   const res = await api('PUT','/config', body);
   if (res?.ok!==false) {
-    if(nuevaCajeros) { db.clave=nuevaCajeros; localStorage.setItem('local_clave',nuevaCajeros); }
-    if(nuevaAdmin) { db.claveAdmin=nuevaAdmin; localStorage.setItem('local_clave_admin',nuevaAdmin); }
     document.getElementById('adminClaveCajeros').value='';
     document.getElementById('adminClaveAdmin').value='';
     toast('🔐 Claves actualizadas','ok');
