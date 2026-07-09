@@ -1,1 +1,34 @@
+name: Build instalador Windows
 
+# Se dispara manualmente desde la pestaña "Actions" de GitHub,
+# o automáticamente al crear un tag que empiece con "v" (ej: v1.1.0)
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Compilar instalador .exe
+        run: npm run dist:win
+
+      - name: Publicar instalador como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: PVDelivery-Windows-Installer
+          path: dist/*.exe
+          retention-days: 30

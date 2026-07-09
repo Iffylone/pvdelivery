@@ -1,1 +1,70 @@
+name: Build APK Android (TWA)
 
+# IMPORTANTE — leer antes de correr:
+# 1. Este workflow empaqueta tu PWA YA DESPLEGADA (Render/Railway) como un
+#    APK instalable. Necesitás la URL pública HTTPS del cliente que querés
+#    empaquetar, configurada como variable de repo PWA_URL (Settings →
+#    Secrets and variables → Actions → Variables → New repository variable).
+# 2. Primera corrida: no vas a tener un keystore todavía. Bubblewrap genera
+#    uno nuevo automáticamente (queda en el artefacto "keystore"). DESCARGALO
+#    Y GUARDALO — sin ese archivo no podés publicar actualizaciones futuras
+#    del mismo APK en Play Store, tenés que arrancar de cero.
+# 3. Para builds futuros con el MISMO keystore: subilo como secret en base64
+#    (ANDROID_KEYSTORE_B64) y descomentá el paso "Restaurar keystore".
+# 4. Después del primer build, tomá el SHA256 fingerprint que imprime el paso
+#    final y ponelo en la variable de entorno ANDROID_ASSETLINKS_JSON del
+#    servidor (Render/Railway) para que el APK abra sin barra de navegador.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Instalar Bubblewrap CLI
+        run: npm install -g @bubblewrap/cli
+
+      # Descomentar estas líneas cuando ya tengas un keystore guardado como secret:
+      # - name: Restaurar keystore existente
+      #   run: echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > android.keystore
+
+      - name: Inicializar proyecto TWA desde el manifest
+        run: |
+          bubblewrap init --manifest="${{ vars.PWA_URL }}/manifest.json" --directory=twa-build <<EOF
+
+
+
+EOF
+        continue-on-error: true
+
+      - name: Compilar APK
+        working-directory: twa-build
+        run: bubblewrap build
+
+      - name: Publicar APK como artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: PVDelivery-Android-APK
+          path: |
+            twa-build/app-release-signed.apk
+            twa-build/android.keystore
+          retention-days: 30
+
+      - name: Mostrar fingerprint SHA256 (para assetlinks.json)
+        working-directory: twa-build
+        run: keytool -list -v -keystore android.keystore -storepass password -alias android || true
