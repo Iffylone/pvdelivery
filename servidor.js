@@ -386,18 +386,30 @@ app.get('/api/repartidores/:id/verificar', async (q, r) => {
 
 app.post('/api/pedidos', async (q, r) => {
   try {
+    // BUGFIX: antes acá se pisaba SIEMPRE con estado:'pendiente', sin importar
+    // lo que mandara el frontend. Eso hacía que pedidos con pago QR/tarjeta/
+    // transferencia (que el cliente manda como estado:'esperando_pago') entraran
+    // igual como 'pendiente' y salieran a cocina ANTES de que MP confirmara el
+    // pago. Ahora se respeta 'esperando_pago' si vino así, y se ignora
+    // cualquier otro valor que el cliente intente forzar (ej. 'entregado').
+    const ESTADOS_INICIALES_PERMITIDOS = ['pendiente', 'esperando_pago'];
+    const estadoInicial = ESTADOS_INICIALES_PERMITIDOS.includes(q.body.estado) ? q.body.estado : 'pendiente';
     let id, p;
     if (useDB) {
       const cRes = await pool.query("SELECT value FROM config WHERE key='contador'");
       id = parseInt(cRes.rows[0]?.value || '1');
-      p = { ...q.body, id, fecha: new Date().toISOString(), estado: 'pendiente', hist: [{ e:'pendiente', h:new Date().toLocaleTimeString() }] };
+      p = { ...q.body, id, fecha: new Date().toISOString(), estado: estadoInicial, hist: [{ e: estadoInicial, h: new Date().toLocaleTimeString() }] };
       await pool.query('INSERT INTO pedidos(id,data) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET data=$2', [id, JSON.stringify(p)]);
       await pool.query("UPDATE config SET value=$1 WHERE key='contador'", [String(id + 1)]);
     } else {
       id = ram.contador++;
-      p = { ...q.body, id, fecha: new Date().toISOString(), estado: 'pendiente', hist: [{ e:'pendiente', h:new Date().toLocaleTimeString() }] };
+      p = { ...q.body, id, fecha: new Date().toISOString(), estado: estadoInicial, hist: [{ e: estadoInicial, h: new Date().toLocaleTimeString() }] };
       ram.pedidos.unshift(p);
     }
+    // Los pedidos 'esperando_pago' SÍ se difunden (para que caja los vea en la
+    // cola de verificación de pago), pero el frontend los filtra fuera de la
+    // vista de cocina (ver ESTADOS_ACTIVOS / renderCocina) hasta que
+    // /api/mp/webhook (o el cajero, para transferencia/tarjeta) los confirme.
     bcastLight({ tipo: 'PEDIDO_NUEVO', pedido: p });
     r.json({ ok: true, pedido: p });
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
