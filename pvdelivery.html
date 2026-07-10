@@ -2341,8 +2341,13 @@ function handle(msg) {
       sonarNotif('nuevo'); vib();
     }
     if (rol === 'local') {
-      toast('📋 Pedido #' + (msg.pedido?.id||'') + ' recibido — pendiente en cocina','info');
-      sonarNotif('nuevo');
+      if (msg.pedido?.estado === 'esperando_pago') {
+        toast('💳 Pedido #' + (msg.pedido?.id||'') + ' — esperando verificación de pago','warn');
+        sonarNotif('pago');
+      } else {
+        toast('📋 Pedido #' + (msg.pedido?.id||'') + ' recibido — pendiente en cocina','info');
+        sonarNotif('nuevo');
+      }
       // Si está en tab cocina, refrescar automáticamente
       if (tabL === 'cocina') renderCocina();
     }
