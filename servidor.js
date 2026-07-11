@@ -52,7 +52,20 @@ const http      = require('http');
 const WebSocket = require('ws');
 const path      = require('path');
 const crypto    = require('crypto');
+const webpush   = require('web-push');
 const { hashPin, verificarPin, firmarToken, requireAuth, loginLimiter, apiLimiter } = require('./auth');
+
+// ── PUSH NOTIFICATIONS (Web Push / VAPID) ────────────────────
+// Claves por defecto incluidas para que funcione sin configuración extra —
+// pero como son las MISMAS para todos los que usen este código tal cual,
+// definí VAPID_PUBLIC_KEY / VAPID_PRIVATE_KEY propias en las variables de
+// entorno de cada cliente/instancia antes de ir a producción en serio
+// (si no, dos locales distintos con las mismas claves podrían, en teoría,
+// leer las suscripciones push del otro si comparten infraestructura).
+// Generar un par nuevo: node -e "console.log(require('web-push').generateVAPIDKeys())"
+const VAPID_PUBLIC  = process.env.VAPID_PUBLIC_KEY  || 'BL7E95KA2O2u-6a1OmUdO9CowCaBHltLOnGcuisdMquSCQ9paphLhp5SsMQuG2ygcCEmSmZYF4A8g8vbOUJKfbE';
+const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || 'QWXDyvh9SAMsqidETFxLRvj5fKkodyfOCOJoO2_-VCA';
+webpush.setVapidDetails('mailto:' + (process.env.VAPID_EMAIL || 'soporte@iffyware.com'), VAPID_PUBLIC, VAPID_PRIVATE);
 
 const PORT   = process.env.PORT || 3000;
 
@@ -136,7 +149,8 @@ let ram = {
   turnoActivo: false,
   turnoApertura: null,
   turnoUsuario: null,
-  turnoEfectivoInicial: 0
+  turnoEfectivoInicial: 0,
+  pushSubs: []
 };
 
 async function initDB() {
@@ -150,6 +164,7 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS clientes    (id BIGINT PRIMARY KEY, data JSONB);
     CREATE TABLE IF NOT EXISTS pagos_sim   (id BIGINT PRIMARY KEY, data JSONB);
     CREATE TABLE IF NOT EXISTS empleados   (id BIGINT PRIMARY KEY, data JSONB);
+    CREATE TABLE IF NOT EXISTS push_subs   (id BIGINT PRIMARY KEY, rol TEXT, ref TEXT, endpoint TEXT UNIQUE, data JSONB);
   `);
   await pool.query('ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT').catch(() => {});
   await pool.query('ALTER TABLE repartidores ADD COLUMN IF NOT EXISTS dni TEXT').catch(() => {});
@@ -322,10 +337,73 @@ async function bcast(tipo, extra) {
   bcastLight({ tipo, ...extra, db });
 }
 
+// ── PUSH NOTIFICATIONS ───────────────────────────────────────
+async function guardarPushSub(rol, ref, subscription) {
+  const id = Date.now() + Math.floor(Math.random()*1000);
+  const row = { rol, ref: ref != null ? String(ref) : null, sub: subscription };
+  if (useDB) {
+    await pool.query(
+      `INSERT INTO push_subs(id, rol, ref, endpoint, data) VALUES($1,$2,$3,$4,$5)
+       ON CONFLICT(endpoint) DO UPDATE SET rol=$2, ref=$3, data=$5`,
+      [id, rol, row.ref, subscription.endpoint, JSON.stringify(row)]
+    );
+  } else {
+    ram.pushSubs = ram.pushSubs.filter(s => s.sub.endpoint !== subscription.endpoint);
+    ram.pushSubs.push(row);
+  }
+}
+async function borrarPushSubPorEndpoint(endpoint) {
+  if (useDB) await pool.query('DELETE FROM push_subs WHERE endpoint=$1', [endpoint]).catch(()=>{});
+  else ram.pushSubs = ram.pushSubs.filter(s => s.sub.endpoint !== endpoint);
+}
+async function listarPushSubs(rol, ref) {
+  if (useDB) {
+    const q = ref != null
+      ? await pool.query('SELECT data FROM push_subs WHERE rol=$1 AND ref=$2', [rol, String(ref)])
+      : await pool.query('SELECT data FROM push_subs WHERE rol=$1', [rol]);
+    return q.rows.map(r => r.data);
+  }
+  return ram.pushSubs.filter(s => s.rol === rol && (ref == null || s.ref === String(ref)));
+}
+// Manda una notificación push a todas las suscripciones de un rol (y,
+// opcionalmente, de una referencia puntual: id de pedido para 'cliente',
+// id de repartidor para 'rep'). Si una suscripción quedó muerta (410/404 —
+// el navegador la revocó), la borra sola para no acumular basura.
+async function pushA(rol, ref, payload) {
+  try {
+    const subs = await listarPushSubs(rol, ref);
+    await Promise.all(subs.map(async s => {
+      try { await webpush.sendNotification(s.sub, JSON.stringify(payload)); }
+      catch(e) { if (e.statusCode === 410 || e.statusCode === 404) await borrarPushSubPorEndpoint(s.sub.endpoint); }
+    }));
+  } catch(e) { console.error('[PUSH] error:', e.message); }
+}
+
 // ── API ───────────────────────────────────────────────────────
 // ── KEEP-ALIVE: evita cold start en Railway plan gratuito ─────
 // UptimeRobot apunta a GET /ping cada 5 minutos
 app.get('/ping', (q, r) => r.json({ ok: true, ts: Date.now(), uptime: process.uptime() }));
+
+// ── PUSH NOTIFICATIONS: API pública ───────────────────────────
+app.get('/api/push/vapid-public-key', (q, r) => r.json({ publicKey: VAPID_PUBLIC }));
+
+app.post('/api/push/subscribe', async (q, r) => {
+  try {
+    const { rol, ref, subscription } = q.body;
+    if (!subscription?.endpoint || !['cliente','rep','local'].includes(rol)) {
+      return r.status(400).json({ ok: false, error: 'Datos de suscripción inválidos' });
+    }
+    await guardarPushSub(rol, ref, subscription);
+    r.json({ ok: true });
+  } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/push/unsubscribe', async (q, r) => {
+  try {
+    if (q.body.endpoint) await borrarPushSubPorEndpoint(q.body.endpoint);
+    r.json({ ok: true });
+  } catch(e) { r.status(500).json({ ok: false, error: e.message }); }
+});
 
 // Auto-ping interno: si no hay DATABASE_URL o Railway duerme el proceso,
 // este intervalo mantiene el event-loop activo y previene el cold start
@@ -411,6 +489,9 @@ app.post('/api/pedidos', async (q, r) => {
     // vista de cocina (ver ESTADOS_ACTIVOS / renderCocina) hasta que
     // /api/mp/webhook (o el cajero, para transferencia/tarjeta) los confirme.
     bcastLight({ tipo: 'PEDIDO_NUEVO', pedido: p });
+    pushA('local', null, estadoInicial === 'esperando_pago'
+      ? { title: '💳 Pedido #' + p.id, body: 'Esperando verificación de pago', tag: 'pedido-'+p.id, url: '/' }
+      : { title: '🔔 Nuevo pedido #' + p.id, body: (p.cli||'Cliente') + ' — $' + (p.total||0), tag: 'pedido-'+p.id, url: '/' });
     r.json({ ok: true, pedido: p });
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
@@ -438,6 +519,8 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
     if (p.estado === 'esperando_pago' && estado !== 'esperando_pago') {
       return r.status(403).json({ ok: false, error: 'Este pedido espera verificación de pago. Usá el botón de caja para confirmarlo o rechazarlo.' });
     }
+    const repIdAntes = p.repId;
+    const estadoAntes = p.estado;
     p.estado = estado;
     if (cobro) p.cobro = cobro;
     if (horaEntrega) p.horaEntrega = horaEntrega;
@@ -455,6 +538,21 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
     p.hist.push({ e: estado, h: new Date().toLocaleTimeString() });
     if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), id]);
     bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+    // Push: rider recién asignado a este pedido
+    if (repId !== undefined && repId != null && repId !== repIdAntes) {
+      pushA('rep', repId, { title: '🛵 Pedido #' + p.id + ' asignado', body: (p.dir||'Ver dirección en la app'), tag: 'pedido-'+p.id, url: '/' });
+    }
+    // Push: pedido listo para retirar (aviso a todos los riders activos)
+    if (q.body.listoRetiro === true) {
+      pushA('rep', null, { title: '✅ Pedido #' + p.id + ' listo para retirar', body: p.dir||'', tag: 'pedido-'+p.id, url: '/' });
+    }
+    // Push: pedido en camino / entregado → al cliente dueño del pedido
+    if (estado === 'camino' && estadoAntes !== 'camino') {
+      pushA('cliente', p.id, { title: '🛵 ¡Tu pedido está en camino!', body: (p.repNombre ? p.repNombre + ' lo está llevando' : 'El repartidor va hacia vos'), tag: 'pedido-'+p.id, url: '/?rol=cliente' });
+    }
+    if (estado === 'entregado' && estadoAntes !== 'entregado') {
+      pushA('cliente', p.id, { title: '✅ ¡Pedido entregado!', body: 'Buen provecho 🎉', tag: 'pedido-'+p.id, url: '/?rol=cliente' });
+    }
     r.json({ ok: true, pedido: p });
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
@@ -482,6 +580,7 @@ app.put('/api/pedidos/:id/confirmar-pago', requireAuth(), async (q, r) => {
     p.hist.push({ e: 'pendiente', h: p.pagadoEn, via: 'confirmado_por_cajero' });
     if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), id]);
     bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+    pushA('local', null, { title: '👨‍🍳 Pedido #' + p.id + ' a cocina', body: 'Pago verificado', tag: 'pedido-'+p.id, url: '/' });
     r.json({ ok: true, pedido: p });
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
@@ -507,6 +606,7 @@ app.put('/api/pedidos/:id/rechazar-pago', requireAuth(), async (q, r) => {
     p.hist.push({ e: 'cancelado', h: new Date().toLocaleTimeString(), via: 'pago_rechazado' });
     if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), id]);
     bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+    pushA('cliente', p.id, { title: '❌ Pago no verificado', body: 'Tu pedido #' + p.id + ' fue cancelado — contactá al local', tag: 'pedido-'+p.id, url: '/?rol=cliente' });
     r.json({ ok: true, pedido: p });
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
@@ -1023,6 +1123,7 @@ app.post('/api/mp/webhook', async (q, r) => {
               p.hist.push({ e: 'preparando', h: new Date().toLocaleTimeString(), via: 'mp_webhook' });
               if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), pedidoId]);
               bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+              pushA('local', null, { title: '👨‍🍳 Pedido #' + p.id + ' a cocina', body: 'Pago con Mercado Pago verificado automáticamente', tag: 'pedido-'+p.id, url: '/' });
               console.log(`[MP Webhook] ✅ Pedido #${pedidoId} aprobado y enviado a cocina`);
             }
           }

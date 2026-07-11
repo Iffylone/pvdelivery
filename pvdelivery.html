@@ -1213,6 +1213,11 @@ select option { background: var(--ink3); }
         <div style="font-size:11px;color:var(--t4);margin-top:6px;line-height:1.6">Este código identifica tu local.</div>
       </div>
       <div style="margin-top:10px;padding:12px;background:var(--ink3);border:1px solid var(--line);border-radius:8px">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">🔔 Notificaciones</div>
+        <div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.7">Recibí un aviso en el celular/PC cuando llega un pedido nuevo, aunque tengas la pestaña cerrada o minimizada.</div>
+        <button class="btn btn-teal" style="width:auto;padding:10px 18px;font-size:13px" onclick="activarPush('local', null, this)">🔔 Activar notificaciones de este local</button>
+      </div>
+      <div style="margin-top:10px;padding:12px;background:var(--ink3);border:1px solid var(--line);border-radius:8px">
         <div style="font-family:var(--mono);font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">🔗 Enlaces directos por rol</div>
         <div style="font-size:12px;color:var(--t2);margin-bottom:8px;line-height:1.8">
           Compartí cada enlace <strong style="color:var(--t1)">solo con el rol correspondiente</strong>. El cliente y el repartidor no verán las otras secciones del sistema.
@@ -1958,6 +1963,44 @@ select option { background: var(--ink3); }
 // ── Estado global ────────────────────────────────────────
 let ws = null;
 let db = { pedidos:[], productos:[], repartidores:[], promos:[], contador:1, negocio:'Mi Negocio' };
+
+// ── PUSH NOTIFICATIONS ────────────────────────────────────────
+// Se registra el service worker apenas carga la página (no hace falta
+// permiso del usuario para esto — el permiso se pide recién cuando alguien
+// toca el botón "Activar notificaciones", como exige el navegador).
+let _swReg = null;
+if ('serviceWorker' in navigator && 'PushManager' in window) {
+  navigator.serviceWorker.register('/sw.js').then(reg => { _swReg = reg; }).catch(e => console.warn('SW no registrado:', e));
+}
+function _urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+// rol: 'local' (caja/cocina), 'rep' (repartidor, ref=repId), 'cliente' (ref=pedidoId)
+async function activarPush(rol, ref, btnEl) {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      toast('Tu navegador no soporta notificaciones push','warn'); return;
+    }
+    if (Notification.permission === 'denied') {
+      toast('Notificaciones bloqueadas — habilitalas en el candado de la barra de direcciones','warn'); return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') { toast('No se activaron las notificaciones','warn'); return; }
+    if (!_swReg) _swReg = await navigator.serviceWorker.register('/sw.js');
+    await navigator.serviceWorker.ready;
+    let sub = await _swReg.pushManager.getSubscription();
+    if (!sub) {
+      const keyRes = await fetch(getApiBase() + '/api/push/vapid-public-key').then(r=>r.json());
+      sub = await _swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: _urlBase64ToUint8Array(keyRes.publicKey) });
+    }
+    await api('POST', '/push/subscribe', { rol, ref, subscription: sub });
+    toast('🔔 Notificaciones activadas','ok');
+    if (btnEl) { btnEl.textContent = '🔔 Notificaciones activadas'; btnEl.disabled = true; }
+  } catch(e) { console.error('Push error:', e); toast('No se pudieron activar las notificaciones','warn'); }
+}
 let rol = null, miRepId = null, miRepNom = null;
 let carrito = [], promoActiva = null;
 let filtro = 'activos', tabL = 'nuevo', tabR = 'activos';
@@ -2073,7 +2116,8 @@ window.addEventListener('load', () => {
 
       const savedRol = sessionStorage.getItem('rol')
         || (localStorage.getItem('local_auth_bk')==='1' ? 'local' : null)
-        || (localStorage.getItem('rep_nombre') ? 'rep' : null);
+        || (localStorage.getItem('rep_nombre') ? 'rep' : null)
+        || (localStorage.getItem('cli_id') && localStorage.getItem('cli_pedido_activo') ? 'cliente' : null);
       const savedNom = localStorage.getItem('rep_nombre');
       const savedId  = localStorage.getItem('rep_id');
 
@@ -2090,6 +2134,7 @@ window.addEventListener('load', () => {
         }
         entrarLocal();
       } else if (savedRol === 'rep' && savedNom) { miRepNom = savedNom; miRepId = parseInt(savedId || '0'); activarRep(); }
+      else if (savedRol === 'cliente' && localStorage.getItem('cli_id')) { conectarWS(); setTimeout(() => entrarCliente(), 800); }
       else { sessionStorage.removeItem('local_auth'); document.getElementById('roleScreen').classList.add('show'); }
     }, 500);
   }, 1400);
@@ -5165,7 +5210,6 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
         <div class="cli-mpago" id="cliMpago">
           <div class="cli-mpago-opt sel" onclick="selMpago(this,'efectivo')"><div class="cli-mpago-ic">💵</div><div class="cli-mpago-nm">Efectivo</div></div>
           <div class="cli-mpago-opt" onclick="selMpago(this,'transfer')"><div class="cli-mpago-ic">🏦</div><div class="cli-mpago-nm">Transferencia</div></div>
-          <div class="cli-mpago-opt" onclick="selMpago(this,'qr')"><div class="cli-mpago-ic">📱</div><div class="cli-mpago-nm">QR / MP</div></div>
           <div class="cli-mpago-opt" onclick="selMpago(this,'tarjeta')"><div class="cli-mpago-ic">💳</div><div class="cli-mpago-nm">Tarjeta</div></div>
         </div>
       </div>
@@ -5355,6 +5399,7 @@ async function entrarCliente() {
   if (cerradoDiv) cerradoDiv.style.display = 'none';
 
   rol = 'cliente';
+  sessionStorage.setItem('rol', 'cliente');
   sessionStorage.setItem('rolCliente', '1');
   document.getElementById('roleScreen').classList.remove('show');
   document.getElementById('appCliente').style.display = 'block';
