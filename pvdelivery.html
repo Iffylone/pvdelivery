@@ -1973,6 +1973,40 @@ select option { background: var(--ink3); }
 let ws = null;
 let db = { pedidos:[], productos:[], repartidores:[], promos:[], contador:1, negocio:'Mi Negocio' };
 
+// ── GEOCODIFICACIÓN CON CACHÉ ──────────────────────────────────
+// Nominatim (OpenStreetMap) es gratis pero tiene política de uso estricta:
+// máximo 1 request/segundo, y prohíbe expresamente geocodificar la MISMA
+// dirección repetidamente (esto pasaba antes: la dirección del local se
+// volvía a pedir en cada actualización de tracking). Esta caché evita
+// pedir dos veces la misma dirección — la del local prácticamente nunca
+// cambia, y la de un cliente se repite varias veces durante un mismo pedido.
+const _geoCache = new Map(JSON.parse(localStorage.getItem('geo_cache') || '[]'));
+let _geoQueue = Promise.resolve();
+function _guardarGeoCache() {
+  // Máximo 200 direcciones guardadas — evita que localStorage crezca sin límite
+  const entries = [..._geoCache.entries()].slice(-200);
+  try { localStorage.setItem('geo_cache', JSON.stringify(entries)); } catch(e) {}
+}
+async function geocodificarCache(direccion) {
+  if (!direccion) return null;
+  const key = direccion.trim().toLowerCase();
+  if (_geoCache.has(key)) return _geoCache.get(key);
+  // Encadena los pedidos para respetar el límite de 1 req/seg de Nominatim,
+  // aunque varias partes de la app pidan geocodificar al mismo tiempo.
+  const resultado = await (_geoQueue = _geoQueue.then(async () => {
+    try {
+      const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(key.includes('argentina') ? key : key+', Argentina'), { headers: { 'Accept-Language':'es', 'User-Agent':'pvdelivery/1.0' } });
+      const j = await r.json();
+      const geo = j?.length ? { lat: parseFloat(j[0].lat), lng: parseFloat(j[0].lon) } : null;
+      _geoCache.set(key, geo);
+      _guardarGeoCache();
+      await new Promise(res => setTimeout(res, 1100)); // 1 req/seg — con margen
+      return geo;
+    } catch(e) { console.error('Geocoding error:', e); return null; }
+  }));
+  return resultado;
+}
+
 // ── PUSH NOTIFICATIONS ────────────────────────────────────────
 // Se registra el service worker apenas carga la página (no hace falta
 // permiso del usuario para esto — el permiso se pide recién cuando alguien
@@ -3056,13 +3090,12 @@ async function seleccionarRep(repId, repNom, el) {
   }
 }
 
-// Estimar km entre dos direcciones usando geocoding Nominatim (gratuito)
+// Estimar km entre dos direcciones usando geocoding con caché (Nominatim)
 async function estimarKmEntreDirs(dirA, dirB) {
   async function geocode(dir) {
-    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(dir), { headers:{'Accept-Language':'es'} });
-    const d = await r.json();
-    if (!d.length) throw new Error('No encontrado');
-    return { lat: parseFloat(d[0].lat), lng: parseFloat(d[0].lon) };
+    const g = await geocodificarCache(dir);
+    if (!g) throw new Error('No encontrado');
+    return g;
   }
   const [a, b] = await Promise.all([geocode(dirA), geocode(dirB)]);
   const dist = calcDistancia(a.lat, a.lng, b.lat, b.lng);
@@ -3827,10 +3860,9 @@ function iniciarGPS() {
 async function verificarLlegada(lat, lng, pedido) {
   // Geocodificar dirección del pedido para comparar con posición actual
   try {
-    const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(pedido.dir+', Argentina'),{headers:{'Accept-Language':'es','User-Agent':'pvdelivery/1.0'}});
-    const d = await r.json();
-    if (!d.length) return;
-    const destLat = parseFloat(d[0].lat), destLng = parseFloat(d[0].lon);
+    const destGeo = await geocodificarCache(pedido.dir + ', Argentina');
+    if (!destGeo) return;
+    const destLat = destGeo.lat, destLng = destGeo.lng;
     const dist = calcDistancia(lat, lng, destLat, destLng);
     if (dist < 80) {
       // Llegó — cerrar GPS y abrir modal de entrega
@@ -4214,14 +4246,14 @@ async function precalcularDistanciaRider(id) {
   const dirLocal = db.dirLocal || localStorage.getItem('local_direccion') || '';
   if (!dirLocal || !p.dir) return;
   try {
-    // Geocodificar origen (local)
+    // Geocodificar origen (local) y destino, con caché
     const [gLocal, gDest] = await Promise.all([
-      fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(dirLocal+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0','Accept-Language':'es'}}).then(r=>r.json()),
-      fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(p.dir+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0','Accept-Language':'es'}}).then(r=>r.json())
+      geocodificarCache(dirLocal + ', Argentina'),
+      geocodificarCache(p.dir + ', Argentina')
     ]);
-    if (!gLocal.length || !gDest.length) return;
-    const [oLat, oLng] = [parseFloat(gLocal[0].lat), parseFloat(gLocal[0].lon)];
-    const [dLat, dLng] = [parseFloat(gDest[0].lat), parseFloat(gDest[0].lon)];
+    if (!gLocal || !gDest) return;
+    const [oLat, oLng] = [gLocal.lat, gLocal.lng];
+    const [dLat, dLng] = [gDest.lat, gDest.lng];
     const osrm = await fetch(`https://router.project-osrm.org/route/v1/driving/${oLng},${oLat};${dLng},${dLat}?overview=false`).then(r=>r.json());
     if (osrm.routes?.length) {
       const metros = Math.round(osrm.routes[0].distance);
@@ -4268,10 +4300,10 @@ function abrirMapaInternoRider(id) {
       mapDiv.innerHTML = '<div style="padding:16px;text-align:center;color:var(--amber);font-size:13px">📍 Sin GPS del dispositivo — usando ubicación del local como origen</div>';
       if (dirLocal) {
         try {
-          const gl = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(dirLocal+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0'}}).then(r=>r.json());
-          if (gl.length) {
+          const gl = await geocodificarCache(dirLocal + ', Argentina');
+          if (gl) {
             mapDiv.innerHTML = '';
-            await construirMapaRuta(mapDiv, id, parseFloat(gl[0].lat), parseFloat(gl[0].lon), p, dirLocal);
+            await construirMapaRuta(mapDiv, id, gl.lat, gl.lng, p, dirLocal);
             return;
           }
         } catch(e){}
@@ -4293,8 +4325,8 @@ async function construirMapaRuta(mapDiv, id, oLat, oLng, p, dirLocal) {
   // Geocodificar destino
   let destLat = null, destLng = null;
   try {
-    const gd = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(p.dir+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0','Accept-Language':'es'}}).then(r=>r.json());
-    if (gd.length) { destLat = parseFloat(gd[0].lat); destLng = parseFloat(gd[0].lon); }
+    const gd = await geocodificarCache(p.dir + ', Argentina');
+    if (gd) { destLat = gd.lat; destLng = gd.lng; }
   } catch(e){}
 
   // Crear mapa
@@ -4308,9 +4340,9 @@ async function construirMapaRuta(mapDiv, id, oLat, oLng, p, dirLocal) {
   // Marcador local
   if (dirLocal) {
     try {
-      const gl = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(dirLocal+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0'}}).then(r=>r.json());
-      if (gl.length) {
-        L.marker([parseFloat(gl[0].lat),parseFloat(gl[0].lon)],{icon:L.divIcon({html:'<div style="font-size:26px">🏪</div>',iconSize:[30,30],iconAnchor:[15,15],className:''})}).addTo(gpsMapInst).bindPopup('🏪 ' + (db.negocio||'Local'));
+      const gl = await geocodificarCache(dirLocal + ', Argentina');
+      if (gl) {
+        L.marker([gl.lat, gl.lng],{icon:L.divIcon({html:'<div style="font-size:26px">🏪</div>',iconSize:[30,30],iconAnchor:[15,15],className:''})}).addTo(gpsMapInst).bindPopup('🏪 ' + (db.negocio||'Local'));
       }
     } catch(e){}
   }
@@ -6227,9 +6259,8 @@ async function optimizarRutaMultiPedido(repId) {
   // Geocodificar todos los destinos
   const withCoords = await Promise.all(pedidos.map(async p=>{
     try{
-      const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(p.dir+', Argentina'),{headers:{'Accept-Language':'es','User-Agent':'pvdelivery/1.0'}});
-      const d=await r.json();
-      if(d.length)return{...p,destLat:parseFloat(d[0].lat),destLng:parseFloat(d[0].lon)};
+      const g = await geocodificarCache(p.dir + ', Argentina');
+      if(g) return {...p, destLat: g.lat, destLng: g.lng};
     }catch(e){}
     return {...p,destLat:null,destLng:null};
   }));
@@ -6937,22 +6968,19 @@ function iniciarMapaClienteTracking(riderLat, riderLng, pedido) {
     cliTrackRiderMarker = L.marker([riderLat, riderLng], {icon:iconRider}).addTo(cliTrackMap).bindPopup('🛵 Tu repartidor está aquí');
     // Marcador destino (casa del cliente)
     if (pedido?.dir) {
-      fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(pedido.dir+', Argentina'), {headers:{'Accept-Language':'es','User-Agent':'pvdelivery/1.0'}})
-        .then(r=>r.json()).then(d=>{
-          if (!d.length || !cliTrackMap) return;
-          const destLat=parseFloat(d[0].lat), destLng=parseFloat(d[0].lon);
+      geocodificarCache(pedido.dir + ', Argentina').then(async destGeo => {
+          if (!destGeo || !cliTrackMap) return;
+          const destLat = destGeo.lat, destLng = destGeo.lng;
           const iconDest = L.divIcon({html:'<div style="font-size:32px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.8))">🏠</div>',iconSize:[34,40],iconAnchor:[17,40],className:''});
           L.marker([destLat, destLng], {icon:iconDest}).addTo(cliTrackMap).bindPopup('📦 Tu dirección').openPopup();
           // Marcador local
           const dirLocal = db.dirLocal || db.negocio || 'Local';
           if (dirLocal) {
-            fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(dirLocal+', Argentina'),{headers:{'User-Agent':'pvdelivery/1.0'}})
-              .then(r=>r.json()).then(ld=>{
-                if (ld.length && cliTrackMap) {
-                  const iconLocal = L.divIcon({html:'<div style="font-size:28px">🏪</div>',iconSize:[30,30],iconAnchor:[15,30],className:''});
-                  L.marker([parseFloat(ld[0].lat),parseFloat(ld[0].lon)],{icon:iconLocal}).addTo(cliTrackMap).bindPopup('🏪 '+db.negocio);
-                }
-              }).catch(()=>{});
+            const localGeo = await geocodificarCache(dirLocal + ', Argentina').catch(()=>null);
+            if (localGeo && cliTrackMap) {
+              const iconLocal = L.divIcon({html:'<div style="font-size:28px">🏪</div>',iconSize:[30,30],iconAnchor:[15,30],className:''});
+              L.marker([localGeo.lat, localGeo.lng],{icon:iconLocal}).addTo(cliTrackMap).bindPopup('🏪 '+db.negocio);
+            }
           }
           // Trazar ruta rider → destino
           const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${riderLng},${riderLat};${destLng},${destLat}?overview=full&geometries=geojson`;
@@ -6972,12 +7000,12 @@ function iniciarMapaClienteTracking(riderLat, riderLng, pedido) {
   } else {
     // Actualizar posición del rider en tiempo real
     if (cliTrackRiderMarker) cliTrackRiderMarker.setLatLng([riderLat, riderLng]);
-    // Re-trazar ruta con nueva posición del rider
+    // Re-trazar ruta con nueva posición del rider (el destino sale de la
+    // caché — no hace falta re-geocodificar la misma dirección de nuevo)
     if (pedido?.dir && cliTrackMap) {
-      fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q='+encodeURIComponent(pedido.dir+', Argentina'), {headers:{'Accept-Language':'es','User-Agent':'pvdelivery/1.0'}})
-        .then(r=>r.json()).then(d=>{
-          if (!d.length || !cliTrackMap) return;
-          const destLat=parseFloat(d[0].lat), destLng=parseFloat(d[0].lon);
+      geocodificarCache(pedido.dir + ', Argentina').then(destGeo => {
+          if (!destGeo || !cliTrackMap) return;
+          const destLat = destGeo.lat, destLng = destGeo.lng;
           const osrmUrl = `https://router.project-osrm.org/route/v1/driving/${riderLng},${riderLat};${destLng},${destLat}?overview=full&geometries=geojson`;
           fetch(osrmUrl).then(r=>r.json()).then(od=>{
             if (od.routes?.length && cliTrackMap) {
