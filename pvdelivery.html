@@ -764,14 +764,15 @@ select option { background: var(--ink3); }
      SPLASH
      ══════════════════════════════════════════ -->
 <div id="splash">
-  <div class="splash-logo">
-    <!-- Logo real cableado: logo-dev.png (subir ese archivo a la misma carpeta que pvdelivery.html en el hosting). -->
-    <!-- Si necesitás cambiarlo, reemplazá el archivo logo-dev.png por otro del mismo nombre — no hace falta tocar este HTML. -->
-    <div class="splash-icon" id="splashIcon" style="background:#fff"><img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
+  <div class="splash-logo" id="splashLogoFallback" style="display:none">
+    <div class="splash-icon" id="splashIcon" style="background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
     <div class="splash-name">Iffyware <span>Systems</span></div>
     <div class="splash-sub">Systems · Point of Sale</div>
     <div class="splash-bar"></div>
   </div>
+  <video id="introVideo" autoplay muted playsinline preload="auto" style="width:min(88vw,440px);max-height:75vh;border-radius:18px;object-fit:contain;background:var(--ink)">
+    <source src="intro.mp4" type="video/mp4">
+  </video>
 </div>
 
 <!-- ══════════════════════════════════════════
@@ -779,7 +780,7 @@ select option { background: var(--ink3); }
      ══════════════════════════════════════════ -->
 <div id="roleScreen">
   <div class="rs-brand">
-    <div class="rs-brand-logo" id="rsBrandLogo" style="background:#fff;overflow:hidden"><img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
+    <div class="rs-brand-logo" id="rsBrandLogo" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
     <h1 id="rsBrandH1">Iffyware <span>Systems</span></h1>
     <p id="rsBrandSub">Delivery · Point of Sale · v3.0</p>
   </div>
@@ -1727,7 +1728,7 @@ select option { background: var(--ink3); }
     <div class="card">
       <div class="card-title" style="color:var(--violet)">🔐 Logo del desarrollador (Iffyware Systems)</div>
       <div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--violet-bg);border:1px solid var(--violet-bd);border-radius:10px;margin-bottom:12px">
-        <div style="width:64px;height:64px;border-radius:14px;overflow:hidden;flex-shrink:0;background:#fff"><img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+        <div style="width:64px;height:64px;border-radius:14px;overflow:hidden;flex-shrink:0;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
         <div style="flex:1">
           <div style="font-weight:700;font-size:14px;color:var(--violet)">Iffyware Systems</div>
           <div style="font-size:11px;color:var(--t3);font-family:var(--mono)">pvdelivery · v4.0 · © 2025</div>
@@ -2049,31 +2050,24 @@ function abrirVentanaApp() {
   }
 }
 
-// Manifest dinámico para PWA
-(function crearManifest() {
-  const m = {
-    name: 'Iffyware Systems',
-    short_name: 'Systems',
-    description: 'Sistema profesional de gestión de pedidos',
-    start_url: window.location.href,
-    display: 'standalone',
-    background_color: '#0b0e14',
-    theme_color: '#0b0e14',
-    icons: [
-      { src: "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20200%20200'%20style='width:100%;height:100%;display:block'%3E%3Crect%20width='200'%20height='200'%20rx='44'%20fill='url(%23)'/%3E%3Cdefs%3E%3ClinearGradient%20id=''%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0%'%20stop-color='%237c3aed'/%3E%3Cstop%20offset='100%'%20stop-color='%234f46e5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x='32'%20y='48'%20width='18'%20height='104'%20rx='9'%20fill='white'%20opacity='0.95'/%3E%3Cpolygon%20points='110,30%2072,108%20102,108%2090,172%20148,82%20114,82%20132,30'%20fill='%2334d399'/%3E%3C/svg%3E", sizes: '192x192', type: 'image/svg+xml' },
-      { src: "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20200%20200'%20style='width:100%;height:100%;display:block'%3E%3Crect%20width='200'%20height='200'%20rx='44'%20fill='url(%23)'/%3E%3Cdefs%3E%3ClinearGradient%20id=''%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0%'%20stop-color='%237c3aed'/%3E%3Cstop%20offset='100%'%20stop-color='%234f46e5'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect%20x='32'%20y='48'%20width='18'%20height='104'%20rx='9'%20fill='white'%20opacity='0.95'/%3E%3Cpolygon%20points='110,30%2072,108%20102,108%2090,172%20148,82%20114,82%20132,30'%20fill='%2334d399'/%3E%3C/svg%3E", sizes: '512x512', type: 'image/svg+xml' }
-    ]
-  };
-  const blob = new Blob([JSON.stringify(m)], { type: 'application/json' });
-  document.getElementById('pwa-manifest').href = URL.createObjectURL(blob);
-})();
+// El manifest.json ya no se genera acá por JS (ese enfoque era invisible para
+// bubblewrap/Android, que lee el archivo por HTTP antes de que corra ninguna
+// línea de JavaScript). Ahora es un archivo real: /manifest.json, servido
+// tal cual por el servidor, con los íconos reales de la empresa.
 
 // ── Splash ───────────────────────────────────────────────
 window.addEventListener('load', () => {
   const logo = localStorage.getItem('negocio_logo');
   if(logo) aplicarLogo(logo);
 
-  setTimeout(() => {
+  // El splash dura lo que dura el video de intro. Si el video no existe en el
+  // hosting, el navegador bloqueó el autoplay, o hay algún error, se cae al
+  // logo estático de siempre después de 1.4s (nunca se queda trabado).
+  let _splashDone = false;
+  const _iv = document.getElementById('introVideo');
+  const _cerrarSplash = () => {
+    if (_splashDone) return;
+    _splashDone = true;
     document.getElementById('splash').classList.add('out');
     setTimeout(() => {
       document.getElementById('splash').style.display = 'none';
@@ -2137,7 +2131,26 @@ window.addEventListener('load', () => {
       else if (savedRol === 'cliente' && localStorage.getItem('cli_id')) { conectarWS(); setTimeout(() => entrarCliente(), 800); }
       else { sessionStorage.removeItem('local_auth'); document.getElementById('roleScreen').classList.add('show'); }
     }, 500);
-  }, 1400);
+  };
+  if (_iv) {
+    _iv.addEventListener('ended', _cerrarSplash);
+    _iv.addEventListener('error', () => {
+      document.getElementById('splashLogoFallback').style.display = 'flex';
+      _iv.style.display = 'none';
+      setTimeout(_cerrarSplash, 1400);
+    });
+    // Si el navegador bloquea el autoplay (pasa en algunos móviles), o el video
+    // no termina de cargar, no nos quedamos trabados: mostramos el logo fijo.
+    _iv.play().catch(() => {
+      document.getElementById('splashLogoFallback').style.display = 'flex';
+      _iv.style.display = 'none';
+      setTimeout(_cerrarSplash, 1400);
+    });
+    setTimeout(_cerrarSplash, 6000); // red de seguridad: nunca más de 6s de splash
+  } else {
+    document.getElementById('splashLogoFallback').style.display = 'flex';
+    setTimeout(_cerrarSplash, 1400);
+  }
 });
 
 // ── PERSISTENCIA EN HIBERNACIÓN / PANTALLA APAGADA ───────────────────────────
@@ -3703,9 +3716,9 @@ function borrarLogo() {
   localStorage.removeItem('negocio_logo');
   document.getElementById('logoPreview').textContent='';
   document.getElementById('logoPreview').style.backgroundImage='';
-  const si=document.querySelector('.splash-icon'); if(si){si.innerHTML='<img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
-  const rl=document.querySelector('.rs-brand-logo'); if(rl){rl.innerHTML='<img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
-  const cl=document.querySelector('.cli-brand-ic'); if(cl){cl.innerHTML='<img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
+  const si=document.querySelector('.splash-icon'); if(si){si.innerHTML='<img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
+  const rl=document.querySelector('.rs-brand-logo'); if(rl){rl.innerHTML='<img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
+  const cl=document.querySelector('.cli-brand-ic'); if(cl){cl.innerHTML='<img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px">';}
   toast('Logo eliminado','info');
 }
 
@@ -5147,7 +5160,7 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
   <!-- HEADER -->
   <div class="cli-hdr">
     <div class="cli-brand">
-      <div class="cli-brand-ic" style="background:#fff;overflow:hidden"><img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+      <div class="cli-brand-ic" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
       <div>
         <div class="cli-brand-name" id="cliNegNom">Mi Negocio</div>
         <div class="cli-brand-sub" id="cliHdrExtra">DELIVERY ONLINE</div>
@@ -5290,7 +5303,7 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <button onclick="volverDesdeRegistroCli()" style="background:var(--ink3);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--t3);cursor:pointer;font-family:var(--sans)">← Volver</button>
       </div>
-      <div class="cli-brand-ic" style="width:48px;height:48px;border-radius:14px;overflow:hidden;margin-bottom:16px;background:#fff"><img src="logo-dev.png" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+      <div class="cli-brand-ic" style="width:48px;height:48px;border-radius:14px;overflow:hidden;margin-bottom:16px;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
       <div class="cli-reg-title">Bienvenido a <span id="cliRegNegNom" style="color:var(--teal)">Mi Negocio</span></div>
       <div class="cli-reg-sub">Registrate para hacer tu pedido y ver tu historial</div>
       <div class="cli-reg-tabs">
