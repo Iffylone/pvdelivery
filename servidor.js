@@ -1162,6 +1162,86 @@ app.post('/api/mp/webhook', async (q, r) => {
 });
 
 // GET /api/mp/payment/:id — consulta el estado de un pago específico (para verificar después del redirect)
+// Traduce los códigos de rechazo más comunes de MP a mensajes entendibles
+function traducirRechazoMP(detail) {
+  const m = {
+    cc_rejected_insufficient_amount: 'Fondos insuficientes.',
+    cc_rejected_bad_filled_card_number: 'Revisá el número de tarjeta.',
+    cc_rejected_bad_filled_date: 'Revisá la fecha de vencimiento.',
+    cc_rejected_bad_filled_security_code: 'Revisá el código de seguridad (CVV).',
+    cc_rejected_bad_filled_other: 'Revisá los datos de la tarjeta.',
+    cc_rejected_call_for_authorize: 'Tu banco requiere que autorices el pago — llamalo antes de reintentar.',
+    cc_rejected_card_disabled: 'Tarjeta deshabilitada — contactá a tu banco.',
+    cc_rejected_duplicated_payment: 'Ya se procesó un pago igual hace instantes.',
+    cc_rejected_high_risk: 'El pago fue rechazado por seguridad. Probá con otro medio de pago.',
+    cc_rejected_max_attempts: 'Superaste el máximo de intentos con esta tarjeta.',
+    cc_rejected_other_reason: 'Tu banco rechazó el pago.'
+  };
+  return m[detail] || 'El pago fue rechazado. Probá con otra tarjeta u otro medio de pago.';
+}
+
+// POST /api/mp/pagar-tarjeta — cobra directo con el token que genera el
+// Payment Brick del frontend (checkout embebido, sin salir de la app).
+// Body: { pedidoId, token, payment_method_id, issuer_id, installments, payer }
+app.post('/api/mp/pagar-tarjeta', async (q, r) => {
+  if (!mpReady) return r.status(503).json({ ok: false, error: 'MercadoPago no configurado.' });
+  try {
+    const { pedidoId, token, payment_method_id, issuer_id, installments, payer, transaction_amount } = q.body;
+    if (!pedidoId || !token || !payment_method_id) {
+      return r.status(400).json({ ok: false, error: 'Datos de pago incompletos.' });
+    }
+    let p;
+    if (useDB) {
+      const res = await pool.query('SELECT data FROM pedidos WHERE id=$1', [pedidoId]);
+      if (res.rows.length) p = { ...res.rows[0].data, id: pedidoId };
+    } else {
+      p = ram.pedidos.find(x => x.id === pedidoId);
+    }
+    if (!p) return r.status(404).json({ ok: false, error: 'Pedido no encontrado.' });
+    if (p.estado !== 'esperando_pago') return r.status(409).json({ ok: false, error: 'Este pedido ya no está esperando pago.' });
+
+    const { Payment } = require('mercadopago');
+    const paymentApi = new Payment(mpClient);
+    const payment = await paymentApi.create({
+      body: {
+        transaction_amount: Number(transaction_amount || p.total),
+        token,
+        description: 'Pedido #' + pedidoId,
+        installments: Number(installments || 1),
+        payment_method_id,
+        issuer_id: issuer_id || undefined,
+        payer: {
+          email: payer?.email || 'cliente@pvdelivery.com',
+          identification: payer?.identification || undefined
+        },
+        external_reference: String(pedidoId)
+      },
+      requestOptions: { idempotencyKey: 'pedido-' + pedidoId + '-' + Date.now() }
+    });
+
+    if (payment.status === 'approved') {
+      p.estado = 'preparando';
+      p.pagado = true;
+      p.pagadoPor = 'mercadopago';
+      p.pagadoEn = new Date().toISOString();
+      p.mpPaymentId = payment.id;
+      p.hist = p.hist || [];
+      p.hist.push({ e: 'preparando', h: new Date().toLocaleTimeString(), via: 'mp_tarjeta' });
+      if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), pedidoId]);
+      bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+      pushA('local', null, { title: '👨‍🍳 Pedido #' + p.id + ' a cocina', body: 'Pago con tarjeta verificado automáticamente', tag: 'pedido-'+p.id, url: '/' });
+      return r.json({ ok: true, status: 'approved' });
+    }
+    if (payment.status === 'in_process' || payment.status === 'pending') {
+      return r.json({ ok: true, status: payment.status, mensaje: 'Tu pago está siendo procesado — te avisamos apenas se confirme.' });
+    }
+    return r.json({ ok: false, status: payment.status, error: traducirRechazoMP(payment.status_detail) });
+  } catch(e) {
+    console.error('[MP Pagar Tarjeta] Error:', e.message);
+    r.status(500).json({ ok: false, error: 'No se pudo procesar el pago. Probá de nuevo o con otro medio.' });
+  }
+});
+
 app.get('/api/mp/payment/:id', async (q, r) => {
   if (!mpReady) return r.json({ ok: false, error: 'MP no configurado' });
   try {

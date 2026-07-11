@@ -11,6 +11,7 @@
 <link rel="manifest" id="pwa-manifest" href="/manifest.json">
 <title>Iffyware Systems Systems</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://sdk.mercadopago.com/js/v2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -765,7 +766,7 @@ select option { background: var(--ink3); }
      ══════════════════════════════════════════ -->
 <div id="splash">
   <div class="splash-logo" id="splashLogoFallback" style="display:none">
-    <div class="splash-icon" id="splashIcon" style="background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
+    <div class="splash-icon" id="splashIcon" style="background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=&quot;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1f2e;color:#5eead4;font-weight:800;font-size:11px;text-align:center;line-height:1.3&quot;>IFFYWARE<br>SYSTEMS</div>'"></div>
     <div class="splash-name">Iffyware <span>Systems</span></div>
     <div class="splash-sub" id="splashSub">PVDelivery</div>
     <div class="splash-bar"></div>
@@ -780,7 +781,7 @@ select option { background: var(--ink3); }
      ══════════════════════════════════════════ -->
 <div id="roleScreen">
   <div class="rs-brand">
-    <div class="rs-brand-logo" id="rsBrandLogo" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems"></div>
+    <div class="rs-brand-logo" id="rsBrandLogo" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" alt="Iffyware Systems" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=&quot;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1f2e;color:#5eead4;font-weight:800;font-size:11px;text-align:center;line-height:1.3&quot;>IFFYWARE<br>SYSTEMS</div>'"></div>
     <h1 id="rsBrandH1">Iffyware <span>Systems</span></h1>
     <p id="rsBrandSub">Delivery · Point of Sale · v3.0</p>
   </div>
@@ -1736,7 +1737,7 @@ select option { background: var(--ink3); }
     <div class="card">
       <div class="card-title" style="color:var(--violet)">🔐 Logo del desarrollador (Iffyware Systems)</div>
       <div style="display:flex;align-items:center;gap:14px;padding:12px;background:var(--violet-bg);border:1px solid var(--violet-bd);border-radius:10px;margin-bottom:12px">
-        <div style="width:64px;height:64px;border-radius:14px;overflow:hidden;flex-shrink:0;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+        <div style="width:64px;height:64px;border-radius:14px;overflow:hidden;flex-shrink:0;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=&quot;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1f2e;color:#5eead4;font-weight:800;font-size:11px;text-align:center;line-height:1.3&quot;>IFFYWARE<br>SYSTEMS</div>'"></div>
         <div style="flex:1">
           <div style="font-weight:700;font-size:14px;color:var(--violet)">Iffyware Systems</div>
           <div style="font-size:11px;color:var(--t3);font-family:var(--mono)" id="adminDevSub">PVDelivery · v1.1.0</div>
@@ -1795,7 +1796,56 @@ select option { background: var(--ink3); }
         </div>
       </div>
     </div>
+    <div class="card">
+      <div class="card-title">💾 Backup de datos</div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.7">
+        Descarga un archivo con todos los datos actuales del sistema (pedidos, productos, clientes, empleados, repartidores, configuración del negocio). Nunca incluye claves de acceso. Guardalo en un lugar seguro periódicamente.
+      </div>
+      <button class="btn btn-teal" style="width:auto;padding:10px 18px;font-size:13px" onclick="descargarBackupAdmin()">⬇️ Descargar backup ahora</button>
+    </div>
+    <div class="card" style="border-color:var(--rose-bd)">
+      <div class="card-title" style="color:var(--rose)">⚠️ Zona de peligro</div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.7">
+        Esto borra <strong style="color:var(--rose)">todos</strong> los pedidos, clientes, productos, empleados y repartidores, y deja el nombre/dirección/CBU del negocio en blanco — valores de fábrica. Las claves de acceso <strong style="color:var(--t1)">no</strong> se tocan, para que no te quedes afuera. El logo del negocio (que vive en este navegador) también se borra. <strong style="color:var(--rose)">No se puede deshacer</strong> — descargá un backup antes.
+      </div>
+      <button class="btn" style="width:auto;padding:10px 18px;font-size:13px;background:var(--rose);color:#fff;border:none" onclick="confirmarResetAdmin()">🗑️ Resetear sistema (valores de fábrica)</button>
+    </div>
+    <div class="card">
+      <div class="card-title">ℹ️ Información del sistema</div>
+      <div style="font-size:12px;color:var(--t2);margin-bottom:10px;line-height:1.7">
+        Versión instalada, tecnología usada y datos del desarrollador.
+      </div>
+      <button class="btn btn-ghost" style="width:auto;padding:10px 18px;font-size:13px" onclick="abrirInfoSistema()">Ver información del sistema</button>
+    </div>
   </div><!-- admin-3col -->
+  </div>
+
+  <!-- Modal: Información del sistema -->
+  <div id="modalInfoSistema" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:2000;align-items:center;justify-content:center;padding:20px">
+    <div style="background:var(--ink2);border:1px solid var(--line);border-radius:14px;max-width:520px;width:100%;max-height:85vh;overflow-y:auto;padding:24px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <div style="font-size:20px;font-weight:800">ℹ️ Información del Sistema</div>
+        <button onclick="document.getElementById('modalInfoSistema').style.display='none'" style="background:none;border:none;color:var(--t3);font-size:22px;cursor:pointer;line-height:1">×</button>
+      </div>
+      <div style="background:var(--ink3);border-radius:10px;padding:14px;margin-bottom:12px">
+        <div style="font-weight:700;margin-bottom:4px" id="infoSisNombre">Iffyware Systems — PVDelivery</div>
+        <div style="font-size:12px;color:var(--t3);font-family:var(--mono)" id="infoSisVersion">v1.1.0</div>
+        <div style="font-size:12px;color:var(--t3);margin-top:6px">Node.js / Express / PostgreSQL + WebSockets</div>
+      </div>
+      <div style="font-size:13px;color:var(--t2);line-height:1.8">
+        <div style="font-weight:700;color:var(--t1);margin-bottom:4px">Titular / Desarrollador</div>
+        <div>Servicios Técnicos y Desarrollo Integral S.R.L. (SESTEINCA S.R.L.)</div>
+        <div>CUIT: 20-96079692-7</div>
+        <div style="margin-bottom:10px">Contacto: sesteincastillo@gmail.com / +54 9 11 2395-2017</div>
+        <div style="font-weight:700;color:var(--t1);margin-bottom:4px">Propiedad de los datos</div>
+        <div style="margin-bottom:10px">Los datos operativos cargados (pedidos, clientes, productos, configuración) son propiedad exclusiva de quien opera este sistema. Servicios Técnicos y Desarrollo Integral S.R.L. actúa como proveedor del software y no reclama derechos sobre esa información.</div>
+        <div style="font-weight:700;color:var(--t1);margin-bottom:4px">Datos personales</div>
+        <div style="margin-bottom:10px">Este sistema procesa datos personales de clientes y repartidores (nombre, teléfono, dirección) en el marco de la operación normal de un servicio de delivery. El tratamiento de estos datos debe ajustarse a la Ley 25.326 de Protección de Datos Personales (Argentina).</div>
+        <div style="font-weight:700;color:var(--t1);margin-bottom:4px">Limitación de responsabilidad</div>
+        <div style="margin-bottom:10px">El sistema se provee "tal cual". No se garantiza disponibilidad ininterrumpida ni se responde por decisiones operativas o comerciales tomadas en base a los datos generados por el sistema.</div>
+        <div style="font-size:11px;color:var(--t4);margin-top:14px">© 2026 Servicios Técnicos y Desarrollo Integral S.R.L. Todos los derechos reservados.</div>
+      </div>
+    </div>
   </div>
 
   </div><!-- #adminContent -->
@@ -5202,7 +5252,7 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
   <!-- HEADER -->
   <div class="cli-hdr">
     <div class="cli-brand">
-      <div class="cli-brand-ic" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+      <div class="cli-brand-ic" style="background:#fff;overflow:hidden"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=&quot;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1f2e;color:#5eead4;font-weight:800;font-size:11px;text-align:center;line-height:1.3&quot;>IFFYWARE<br>SYSTEMS</div>'"></div>
       <div>
         <div class="cli-brand-name" id="cliNegNom">Mi Negocio</div>
         <div class="cli-brand-sub" id="cliHdrExtra">DELIVERY ONLINE</div>
@@ -5346,7 +5396,7 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
         <button onclick="volverDesdeRegistroCli()" style="background:var(--ink3);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--t3);cursor:pointer;font-family:var(--sans)">← Volver</button>
       </div>
-      <div class="cli-brand-ic" style="width:48px;height:48px;border-radius:14px;overflow:hidden;margin-bottom:16px;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px"></div>
+      <div class="cli-brand-ic" style="width:48px;height:48px;border-radius:14px;overflow:hidden;margin-bottom:16px;background:#fff"><img src="logo-dev.jpg" style="width:100%;height:100%;object-fit:contain;border-radius:14px" onerror="this.onerror=null;this.parentElement.innerHTML='<div style=&quot;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:#1a1f2e;color:#5eead4;font-weight:800;font-size:11px;text-align:center;line-height:1.3&quot;>IFFYWARE<br>SYSTEMS</div>'"></div>
       <div class="cli-reg-title">Bienvenido a <span id="cliRegNegNom" style="color:var(--teal)">Mi Negocio</span></div>
       <div class="cli-reg-sub">Registrate para hacer tu pedido y ver tu historial</div>
       <div class="cli-reg-tabs">
@@ -5405,6 +5455,50 @@ const CAT_EMOJIS = {
 // Subtítulo de producto (splash + tarjeta de Admin) — dato de config, no
 // parte fija del logo. Así el mismo logo-dev.jpg sirve para toda la línea
 // Iffyware (PVDelivery, Depot, Seguros...); solo cambia PRODUCTO_NOMBRE.
+function abrirInfoSistema() {
+  actualizarBrandingProducto();
+  const nom = document.getElementById('infoSisNombre');
+  if (nom) nom.textContent = 'Iffyware Systems — ' + (db.productoNombre || 'PVDelivery');
+  const ver = document.getElementById('infoSisVersion');
+  if (ver) ver.textContent = 'v' + (db.productoVersion || '1.1.0');
+  document.getElementById('modalInfoSistema').style.display = 'flex';
+}
+
+async function descargarBackupAdmin() {
+  try {
+    toast('⏳ Generando backup...', 'info');
+    const res = await api('GET', '/backup');
+    if (!res) { toast('Error al generar el backup', 'warn'); return; }
+    const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `backup-${(db.negocio||'pvdelivery').replace(/\s+/g,'_')}-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast('✅ Backup descargado', 'ok');
+  } catch(e) { toast('Error al descargar el backup', 'warn'); }
+}
+
+function confirmarResetAdmin() {
+  const paso1 = confirm('⚠️ Esto borra TODOS los pedidos, clientes, productos, empleados y repartidores, y deja el negocio en blanco.\n\nEsta acción NO se puede deshacer.\n\n¿Descargaste un backup antes de continuar?');
+  if (!paso1) return;
+  const paso2 = prompt('Para confirmar, escribí BORRAR (en mayúsculas):');
+  if (paso2 !== 'BORRAR') { toast('Reseteo cancelado', 'info'); return; }
+  ejecutarResetAdmin();
+}
+
+async function ejecutarResetAdmin() {
+  try {
+    toast('⏳ Reseteando sistema...', 'info');
+    const res = await api('POST', '/reset', {});
+    if (!res || res.ok === false) { toast('Error al resetear el sistema', 'warn'); return; }
+    localStorage.removeItem('negocio_logo');
+    toast('✅ Sistema reseteado a valores de fábrica', 'ok');
+    setTimeout(() => window.location.reload(), 1200);
+  } catch(e) { toast('Error al resetear el sistema', 'warn'); }
+}
+
 function actualizarBrandingProducto() {
   const nombre = db.productoNombre || 'PVDelivery';
   const version = db.productoVersion || '';
@@ -5808,17 +5902,8 @@ async function confirmarPedidoCli() {
     mostrarPantallaPagoTransfer(nom, tel, dir, notas, sub);
     return;
   }
-  if (cliMpagoSel === 'tarjeta' || cliMpagoSel === 'qr') {
-    if (cliMpagoSel === 'tarjeta') {
-      mostrarPantallaPagoTarjeta(nom, tel, dir, notas, sub);
-    } else {
-      // QR: si MP está activo, abrir checkout; si no, flujo manual
-      if (_mpStatus?.mpReady) {
-        enviarPedidoYAbrirMP(nom, tel, dir, notas, sub);
-      } else {
-        toast('⚠️ MercadoPago no está configurado en este local', 'warn');
-      }
-    }
+  if (cliMpagoSel === 'tarjeta') {
+    mostrarPantallaPagoTarjeta(nom, tel, dir, notas, sub);
     return;
   }
 
@@ -5910,14 +5995,15 @@ function mostrarPantallaPagoTransfer(nom, tel, dir, notas, sub) {
 }
 
 function mostrarPantallaPagoTarjeta(nom, tel, dir, notas, sub) {
-  // Asegurarse de tener el estado real de MP antes de decidir
-  const ejecutar = (mpReady) => {
-    if (mpReady) {
-      _cliDatosPendientes = { nom, tel, dir, notas, sub };
-      enviarPedidoYAbrirMP(nom, tel, dir, notas, sub);
+  const ejecutar = (mpReady, publicKey) => {
+    if (mpReady && publicKey && window.MercadoPago) {
+      mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey);
       return;
     }
-    // Fallback: formulario manual (posnet físico en caja)
+    // Fallback: formulario manual (posnet físico en caja) — solo si MP no
+    // está configurado en este local. Estos datos NO se cobran online: se
+    // guardan solo los últimos 4 dígitos, para que el cajero cobre en el
+    // posnet físico cuando llegue el pedido.
     ocultarTodasPantallasCli();
     const div = document.createElement('div');
     div.id = 'cliPagoPantalla';
@@ -5963,16 +6049,108 @@ function mostrarPantallaPagoTarjeta(nom, tel, dir, notas, sub) {
   };
   // Si ya tenemos el estado cacheado, usarlo; si no, consultarlo ahora
   if (_mpStatus !== null) {
-    ejecutar(_mpStatus.mpReady);
+    ejecutar(_mpStatus.mpReady, _mpStatus.publicKey);
   } else {
     fetch(getApiBase() + '/api/mp/status').then(r => r.json()).then(st => {
       _mpStatus = st;
-      ejecutar(st.mpReady);
-    }).catch(() => ejecutar(false));
+      ejecutar(st.mpReady, st.publicKey);
+    }).catch(() => ejecutar(false, null));
   }
 }
 
 let _cliDatosPendientes = null;
+let _mpBrickController = null;
+
+// Checkout embebido con tarjeta (Payment Brick de MP) — reemplaza el
+// redirect a Checkout Pro, que dependía de la cuenta de MP tener ciertas
+// políticas habilitadas y venía fallando ("At least one policy...").
+// Acá el cliente carga los datos de la tarjeta DENTRO de esta pantalla,
+// en campos que son iframes seguros de Mercado Pago (nunca tocan nuestro
+// servidor ni nuestro JS — eso lo exige el propio MP por PCI compliance).
+async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
+  const pedido = {
+    cli: nom, tel, dir, notas,
+    repId: null, repNombre: null,
+    items: [...cliCarrito],
+    sub, desc: 0, envio: 0, total: sub,
+    mpago: 'tarjeta', pagado: false,
+    estado: 'esperando_pago',
+    fuente: 'cliente', tipoPedido: cliTipoPedido
+  };
+  localStorage.setItem('cli_nombre', nom); localStorage.setItem('cli_tel', tel); localStorage.setItem('cli_dir', dir);
+
+  toast('⏳ Preparando el pago...', 'info');
+  const resp = await api('POST', '/pedidos', pedido);
+  if (!resp?.pedido) { toast('Error al crear el pedido. Intentá de nuevo.', 'warn'); return; }
+  const pedidoId = resp.pedido.id;
+  localStorage.setItem('cli_pedido_activo', String(pedidoId));
+
+  ocultarTodasPantallasCli();
+  const div = document.createElement('div');
+  div.id = 'cliPagoPantalla';
+  div.style.cssText = 'padding:20px 16px;max-width:480px;margin:0 auto';
+  div.innerHTML = `
+    <button onclick="cancelarBrickTarjeta(${pedidoId})" style="background:none;border:none;color:var(--t3);font-size:13px;cursor:pointer;margin-bottom:16px;font-family:var(--sans)">← Volver</button>
+    <div style="font-size:18px;font-weight:800;margin-bottom:4px">💳 Pago con Tarjeta</div>
+    <div style="font-size:13px;color:var(--t3);margin-bottom:16px">Total: <strong style="color:var(--teal);font-size:16px">$${sub.toLocaleString()}</strong></div>
+    <div id="mpBrickContainer"></div>
+    <div id="mpBrickMsg" style="margin-top:10px;font-size:13px;text-align:center"></div>
+    <div style="padding:10px;background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:8px;margin-top:12px;font-size:12px;color:var(--teal);line-height:1.7">
+      🔒 Pago procesado directamente por Mercado Pago — tus datos de tarjeta nunca pasan por nuestro servidor.
+    </div>
+  `;
+  document.getElementById('appCliente').querySelector('.cli-wrap').appendChild(div);
+
+  try {
+    const mp = new MercadoPago(publicKey, { locale: 'es-AR' });
+    const bricksBuilder = mp.bricks();
+    _mpBrickController = await bricksBuilder.create('payment', 'mpBrickContainer', {
+      initialization: { amount: sub, payer: { email: '' } },
+      customization: {
+        paymentMethods: { creditCard: 'all', debitCard: 'all', maxInstallments: 1 },
+        visual: { style: { theme: 'dark' } }
+      },
+      callbacks: {
+        onReady: () => {},
+        onError: (err) => { console.error('Brick error:', err); document.getElementById('mpBrickMsg').innerHTML = '<span style="color:var(--rose)">Error al cargar el formulario de pago. Recargá la página.</span>'; },
+        onSubmit: async (formData) => {
+          const msgEl = document.getElementById('mpBrickMsg');
+          msgEl.innerHTML = '<span style="color:var(--t3)">⏳ Procesando pago...</span>';
+          try {
+            const r = await fetch(getApiBase() + '/api/mp/pagar-tarjeta', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ pedidoId, transaction_amount: sub, ...formData })
+            });
+            const data = await r.json();
+            if (data.ok && data.status === 'approved') {
+              cliCarrito = [];
+              document.getElementById('cliPagoPantalla')?.remove();
+              cliPedidoId = pedidoId;
+              mostrarTracking(resp.pedido);
+              toast('✅ ¡Pago aprobado! Tu pedido va a cocina', 'ok');
+            } else if (data.ok) {
+              msgEl.innerHTML = '<span style="color:var(--amber)">' + (data.mensaje || 'Tu pago está siendo procesado.') + '</span>';
+            } else {
+              msgEl.innerHTML = '<span style="color:var(--rose)">❌ ' + (data.error || 'Pago rechazado') + '</span>';
+            }
+          } catch(e) {
+            msgEl.innerHTML = '<span style="color:var(--rose)">Error de conexión — intentá de nuevo.</span>';
+          }
+        }
+      }
+    });
+  } catch(e) {
+    console.error('Error al inicializar Brick:', e);
+    document.getElementById('mpBrickMsg').innerHTML = '<span style="color:var(--rose)">No se pudo cargar el formulario de pago.</span>';
+  }
+}
+
+function cancelarBrickTarjeta(pedidoId) {
+  if (_mpBrickController) { try { _mpBrickController.unmount(); } catch(e) {} _mpBrickController = null; }
+  document.getElementById('cliPagoPantalla')?.remove();
+  ocultarTodasPantallasCli();
+  document.getElementById('cliForm').style.display = 'block';
+}
 
 async function enviarPedidoYAbrirMP(nom, tel, dir, notas, sub) {
   const pedido = {
