@@ -68,6 +68,11 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY || 'QWXDyvh9SAMsqidETFxLRvj5
 webpush.setVapidDetails('mailto:' + (process.env.VAPID_EMAIL || 'soporte@iffyware.com'), VAPID_PUBLIC, VAPID_PRIVATE);
 
 const PORT   = process.env.PORT || 3000;
+// Nombre del producto dentro de la línea Iffyware Systems (PVDelivery, Depot,
+// Seguros, etc.) — separado del logo para que el mismo logo-dev.jpg sirva
+// para toda la línea; cada instancia lo cambia solo con esta variable de entorno.
+const PRODUCTO_NOMBRE = process.env.PRODUCTO_NOMBRE || 'PVDelivery';
+const PRODUCTO_VERSION = require('./package.json').version || '1.1.0';
 
 const app    = express();
 const server = http.createServer(app);
@@ -224,7 +229,9 @@ async function getDB() {
       turnoActivo: ram.turnoActivo||false,
       turnoApertura: ram.turnoApertura||null,
       turnoUsuario: ram.turnoUsuario||null,
-      turnoEfectivoInicial: ram.turnoEfectivoInicial||0
+      turnoEfectivoInicial: ram.turnoEfectivoInicial||0,
+      productoNombre: PRODUCTO_NOMBRE,
+      productoVersion: PRODUCTO_VERSION
     };
     return sinSensibles(full);
   }
@@ -258,7 +265,9 @@ async function getDB() {
     promos:         pm.rows.map(r => r.data),
     clientes:       cl.rows.map(r => r.data),
     pagosSimulados: pg.rows.map(r => r.data),
-    empleados:      emp.rows.map(r => r.data)
+    empleados:      emp.rows.map(r => r.data),
+    productoNombre: PRODUCTO_NOMBRE,
+    productoVersion: PRODUCTO_VERSION
   };
   return sinSensibles(full);
 }
