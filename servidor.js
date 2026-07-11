@@ -620,6 +620,42 @@ app.put('/api/pedidos/:id/rechazar-pago', requireAuth(), async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
+// POST /api/pedidos/:id/calificar — el cliente califica al repartidor tras
+// recibir su pedido. Sin auth (lo llama la app del cliente, que no tiene
+// login), pero validado: solo se puede calificar un pedido 'entregado' que
+// todavía no tenga calificación — evita que se vote dos veces el mismo pedido.
+app.post('/api/pedidos/:id/calificar', async (q, r) => {
+  try {
+    const id = parseInt(q.params.id);
+    const estrellas = parseInt(q.body.estrellas);
+    const comentario = (q.body.comentario || '').toString().slice(0, 300);
+    if (!estrellas || estrellas < 1 || estrellas > 5) {
+      return r.status(400).json({ ok: false, error: 'Calificación inválida (1 a 5 estrellas).' });
+    }
+    let p;
+    if (useDB) {
+      const res = await pool.query('SELECT data FROM pedidos WHERE id=$1', [id]);
+      if (res.rows.length) p = { ...res.rows[0].data, id };
+    } else {
+      p = ram.pedidos.find(x => x.id === id);
+    }
+    if (!p) return r.status(404).json({ ok: false, error: 'Pedido no encontrado.' });
+    if (p.estado !== 'entregado') return r.status(409).json({ ok: false, error: 'Solo se puede calificar un pedido ya entregado.' });
+    if (p.calificacion) return r.status(409).json({ ok: false, error: 'Este pedido ya fue calificado.' });
+    p.calificacion = estrellas;
+    if (comentario) p.calificacionComentario = comentario;
+    p.calificacionEn = new Date().toISOString();
+    if (useDB) await pool.query('UPDATE pedidos SET data=$1 WHERE id=$2', [JSON.stringify(p), id]);
+    bcastLight({ tipo: 'PEDIDO_ACTUALIZADO', pedido: p });
+    // Avisar al repartidor calificado (si tiene push activado) — sin exponer
+    // el comentario en la notificación, solo las estrellas.
+    if (p.repId) {
+      pushA('rep', p.repId, { title: '⭐'.repeat(estrellas) + ' Nueva calificación', body: 'Pedido #' + p.id + ' — ' + estrellas + '/5', tag: 'calif-'+p.id, url: '/' });
+    }
+    r.json({ ok: true });
+  } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
+});
+
 app.delete('/api/pedidos', requireAuth('admin'), async (q, r) => {
   try {
     if (useDB) { await pool.query('DELETE FROM pedidos'); await pool.query("UPDATE config SET value='1' WHERE key='contador'"); }

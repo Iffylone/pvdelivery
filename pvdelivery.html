@@ -5382,6 +5382,16 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
         <button class="btn btn-teal" style="font-size:15px;padding:14px" onclick="marcarPedidoRecibidoCli()">✅ Confirmar que recibí mi pedido</button>
         <button class="btn btn-ghost" style="margin-top:8px" onclick="abrirChatInterno(cliPedidoId)">💬 Contactar al repartidor</button>
       </div>
+      <div id="cliCalificacion" style="display:none;margin-top:12px;padding:16px;background:var(--ink3);border:1px solid var(--line);border-radius:10px;text-align:center">
+        <div style="font-size:14px;font-weight:700;margin-bottom:4px">¿Cómo estuvo tu entrega?</div>
+        <div style="font-size:12px;color:var(--t3);margin-bottom:12px" id="cliCalifRepNombre">Calificá a tu repartidor</div>
+        <div id="cliCalifEstrellas" style="font-size:34px;letter-spacing:6px;margin-bottom:12px;cursor:pointer">☆☆☆☆☆</div>
+        <textarea id="cliCalifComentario" placeholder="Comentario (opcional)" maxlength="300" style="width:100%;min-height:60px;background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--t1);font-family:var(--sans);font-size:13px;resize:vertical;margin-bottom:10px"></textarea>
+        <button class="btn btn-teal" onclick="enviarCalificacionCli()">Enviar calificación</button>
+      </div>
+      <div id="cliCalifGracias" style="display:none;margin-top:12px;padding:14px;background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:10px;text-align:center;font-size:13px;color:var(--teal)">
+        ⭐ ¡Gracias por tu calificación!
+      </div>
     </div>
   </div>
 
@@ -6323,7 +6333,6 @@ function actualizarTracking(p) {
       riderTrackEl.style.display = 'block';
       // repNombre puede estar vacío si el rider no lo cargó — mostrar genérico
       document.getElementById('cliRiderNombre').textContent = '🛵 ' + (p.repNombre || 'Repartidor en camino');
-      document.getElementById('cliRiderNombre').textContent = '🛵 ' + p.repNombre;
       const dirLocal = db.dirLocal || localStorage.getItem('local_direccion') || '';
       const dirCliente = p.dir || '';
       if (dirLocal) {
@@ -6354,6 +6363,51 @@ function actualizarTracking(p) {
   // Acciones entrega
   const accionesEl = document.getElementById('cliAccionesEntrega');
   if (accionesEl) accionesEl.style.display = (p.estado === 'camino') ? 'block' : 'none';
+
+  // Calificación del repartidor (solo si ya entregó y todavía no calificó)
+  const califEl = document.getElementById('cliCalificacion');
+  const graciasEl = document.getElementById('cliCalifGracias');
+  if (califEl && graciasEl) {
+    if (p.estado === 'entregado' && !p.calificacion) {
+      califEl.style.display = 'block';
+      graciasEl.style.display = 'none';
+      document.getElementById('cliCalifRepNombre').textContent = p.repNombre ? 'Calificá a ' + p.repNombre : 'Calificá tu entrega';
+      _califSeleccion = 0;
+      pintarEstrellasCli(0);
+    } else if (p.estado === 'entregado' && p.calificacion) {
+      califEl.style.display = 'none';
+      graciasEl.style.display = 'block';
+    } else {
+      califEl.style.display = 'none';
+      graciasEl.style.display = 'none';
+    }
+  }
+}
+
+let _califSeleccion = 0;
+function pintarEstrellasCli(n) {
+  const el = document.getElementById('cliCalifEstrellas');
+  if (!el) return;
+  el.innerHTML = [1,2,3,4,5].map(i => `<span onclick="_califSeleccion=${i};pintarEstrellasCli(${i})" style="color:${i<=n?'var(--amber)':'var(--t4)'}">${i<=n?'★':'☆'}</span>`).join('');
+}
+async function enviarCalificacionCli() {
+  if (!_califSeleccion) { toast('Elegí de 1 a 5 estrellas', 'warn'); return; }
+  if (!cliPedidoId) return;
+  const comentario = document.getElementById('cliCalifComentario')?.value.trim() || '';
+  try {
+    const r = await fetch(getApiBase() + '/api/pedidos/' + cliPedidoId + '/calificar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ estrellas: _califSeleccion, comentario })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      document.getElementById('cliCalificacion').style.display = 'none';
+      document.getElementById('cliCalifGracias').style.display = 'block';
+      toast('⭐ ¡Gracias por tu calificación!', 'ok');
+    } else {
+      toast(data.error || 'No se pudo enviar la calificación', 'warn');
+    }
+  } catch(e) { toast('Error de conexión', 'warn'); }
 }
 
 function nuevoPedidoCli() {
@@ -6818,7 +6872,13 @@ function renderAdminRiders() {
   const riders = db.repartidores || [];
   if (!riders.length) { div.innerHTML='<div style="font-family:var(--mono);font-size:12px;color:var(--t3)">Sin riders registrados.</div>'; return; }
   const vehicIcMap = {moto:'🛵',bicicleta:'🚲',auto:'🚗'};
-  div.innerHTML = riders.map(r => `
+  const calif = r => {
+    const califs = (db.pedidos||[]).filter(p => p.repId === r.id && p.calificacion);
+    if (!califs.length) return null;
+    const prom = califs.reduce((s,p)=>s+p.calificacion,0) / califs.length;
+    return { prom: prom.toFixed(1), n: califs.length };
+  };
+  div.innerHTML = riders.map(r => { const c = calif(r); return `
     <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--ink3);border-radius:8px;margin-bottom:8px">
       ${r.foto?`<img src="${r.foto}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--line)">`:`<div style="width:48px;height:48px;border-radius:50%;background:var(--ink2);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${vehicIcMap[r.vehiculo]||'🛵'}</div>`}
       <div style="flex:1">
@@ -6826,12 +6886,13 @@ function renderAdminRiders() {
         <div style="font-family:var(--mono);font-size:10px;color:var(--teal)">ID: ${r.id}</div>
         <div style="font-size:11px;color:var(--t3)">${r.tel||'—'} · DNI: ${r.dni||'—'}</div>
         ${r.alias?`<div style="font-size:11px;color:var(--violet)">${r.alias}</div>`:''}
+        ${c?`<div style="font-size:12px;color:var(--amber);margin-top:2px">⭐ ${c.prom} (${c.n} calificación${c.n>1?'es':''})</div>`:'<div style="font-size:11px;color:var(--t4);margin-top:2px">Sin calificaciones aún</div>'}
       </div>
       <div style="display:flex;flex-direction:column;gap:4px">
         <button onclick="editarRiderAdmin(${r.id})" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer">✏️ Editar</button>
         <button class="rm" onclick="delRiderAdmin(${r.id})" style="color:var(--rose)">✕</button>
       </div>
-    </div>`).join('');
+    </div>`; }).join('');
 }
 
 function previewAdminRFoto(input) {
