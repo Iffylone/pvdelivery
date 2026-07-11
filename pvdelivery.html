@@ -5997,6 +5997,7 @@ function mostrarTracking(p) {
 
 function actualizarTracking(p) {
   const estados = ['pendiente','preparando','camino','entregado'];
+  const idx = estados.indexOf(p.estado); // BUGFIX: esta variable no existía — rompía todo lo que sigue (mapa GPS, botón "confirmar recibido") en silencio, cada vez que se llamaba esta función.
   const icons = { pendiente:'⏳', preparando:'🍳', camino:'🛵', entregado:'✅' };
   const subs = { pendiente:'Tu pedido fue recibido, pronto lo preparan', preparando:'¡Estamos preparando tu pedido!', camino:'¡Tu repartidor está en camino hacia vos!', entregado:'¡Pedido entregado! Buen provecho 🎉' };
 

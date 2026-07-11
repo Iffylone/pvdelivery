@@ -520,6 +520,61 @@ app.delete('/api/pedidos', requireAuth('admin'), async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
+// GET /api/backup — descarga un dump completo de los datos operativos
+// (pedidos, clientes, productos, empleados, repartidores, config del
+// negocio). Nunca incluye claves de acceso (lo filtra sinSensibles).
+app.get('/api/backup', requireAuth('admin'), async (q, r) => {
+  try {
+    const data = await getDB();
+    r.setHeader('Content-Disposition', `attachment; filename="backup-${data.negocio||'pvdelivery'}-${new Date().toISOString().slice(0,10)}.json"`);
+    r.json({ generadoEl: new Date().toISOString(), sistema: 'PVDelivery — Iffyware Systems', ...data });
+  } catch(e) { r.status(500).json({ error: e.message }); }
+});
+
+// POST /api/reset — borra TODOS los datos operativos (pedidos, clientes,
+// productos, empleados, repartidores, promos) y limpia los datos del
+// negocio (nombre, dirección, CBU/alias). Mantiene las claves de acceso
+// (clave/claveAdmin) para que el admin no quede afuera del sistema tras
+// resetear. El logo del negocio vive en el navegador (localStorage), así
+// que el frontend lo borra por su cuenta al llamar a este endpoint.
+app.post('/api/reset', requireAuth('admin'), async (q, r) => {
+  try {
+    if (useDB) {
+      await pool.query('DELETE FROM pedidos');
+      await pool.query('DELETE FROM clientes');
+      await pool.query('DELETE FROM promos');
+      await pool.query('DELETE FROM pagos_sim');
+      await pool.query('DELETE FROM empleados');
+      await pool.query('DELETE FROM repartidores');
+      await pool.query('DELETE FROM productos');
+      for (const p of productosDefault())
+        await pool.query('INSERT INTO productos VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING',
+          [p.id, p.nombre, p.precio, p.categoria, p.descripcion, p.imagen]);
+      await pool.query(`UPDATE config SET value=$1 WHERE key='negocio'`, ['Mi Negocio']);
+      await pool.query(`UPDATE config SET value=$1 WHERE key='dirLocal'`, ['']);
+      await pool.query(`UPDATE config SET value=$1 WHERE key='cbuLocal'`, ['']);
+      await pool.query(`UPDATE config SET value=$1 WHERE key='aliasLocal'`, ['']);
+      await pool.query(`UPDATE config SET value='1' WHERE key='contador'`);
+    } else {
+      ram.pedidos = [];
+      ram.clientes = [];
+      ram.promos = [];
+      ram.pagosSimulados = [];
+      ram.empleados = [];
+      ram.repartidores = [];
+      ram.productos = productosDefault();
+      ram.negocio = 'Mi Negocio';
+      ram.dirLocal = '';
+      ram.cbuLocal = '';
+      ram.aliasLocal = '';
+      ram.contador = 1;
+      // clave y claveAdmin NO se tocan — a propósito, para no bloquear al admin.
+    }
+    await bcast('ESTADO_INICIAL', {});
+    r.json({ ok: true });
+  } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/pedidos/:id', async (q, r) => {
   try {
     const id = parseInt(q.params.id);
@@ -645,7 +700,7 @@ app.delete('/api/productos/:id', async (q, r) => {
 app.put('/api/config', requireAuth('admin'), async (q, r) => {
   try {
     if (q.body.negocio !== undefined) {
-      if (useDB) await pool.query("UPDATE config SET value=$1 WHERE key='negocio'", [q.body.negocio]);
+      if (useDB) await pool.query("INSERT INTO config(key,value) VALUES('negocio',$1) ON CONFLICT(key) DO UPDATE SET value=$1", [q.body.negocio]);
       else ram.negocio = q.body.negocio;
     }
     if (q.body.dirLocal !== undefined) {
@@ -1151,7 +1206,19 @@ app.get('/.well-known/assetlinks.json', (q, r) => {
   r.json([]);
 });
 
-app.get('*', (q, r) => r.sendFile(path.join(__dirname, 'pvdelivery.html')));
+// BUGFIX: antes esto era "app.get('*', ...)" sin condición — cualquier
+// archivo estático que faltara (ej. si te olvidaste de subir logo-dev.png,
+// icon-192.png, etc.) devolvía el pvdelivery.html COMPLETO con status 200,
+// como si fuera ese archivo. El navegador entonces intentaba decodificar
+// ese HTML como si fuera una imagen y fallaba en silencio — no había forma
+// de darse cuenta por qué el logo no cargaba (ni un 404 en la pestaña Red).
+// Ahora, si el pedido parece un archivo (tiene extensión) y no existe,
+// se devuelve un 404 real; el fallback a pvdelivery.html queda solo para
+// rutas de navegación (sin extensión), que es para lo que existe.
+app.get('*', (q, r) => {
+  if (/\.[a-zA-Z0-9]+$/.test(q.path)) return r.status(404).send('No encontrado: ' + q.path);
+  r.sendFile(path.join(__dirname, 'pvdelivery.html'));
+});
 
 async function main() {
   if (useDB) {
