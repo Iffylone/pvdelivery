@@ -771,7 +771,7 @@ select option { background: var(--ink3); }
     <div class="splash-sub" id="splashSub">PVDelivery</div>
     <div class="splash-bar"></div>
   </div>
-  <video id="introVideo" autoplay muted playsinline preload="auto" style="width:min(88vw,440px);max-height:75vh;border-radius:18px;object-fit:contain;background:var(--ink)">
+  <video id="introVideo" autoplay muted playsinline preload="auto" style="width:100vw;height:100vh;object-fit:cover;background:var(--ink)">
     <source src="intro.mp4" type="video/mp4">
   </video>
 </div>
@@ -1889,15 +1889,11 @@ select option { background: var(--ink3); }
     <div class="modal-handle"></div>
     <div style="text-align:center;font-size:32px;margin-bottom:8px">🔐</div>
     <div class="modal-title">Acceso al Local</div>
-    <div class="modal-sub">Ingresá tu usuario y clave</div>
+    <div class="modal-sub">Ingresá tu clave o PIN personal</div>
     <div style="margin:14px 0">
       <div class="fl">
-        <label>Nombre / Usuario</label>
-        <input id="localUsuarioInput" placeholder="Tu nombre o usuario" autocomplete="off">
-      </div>
-      <div class="fl">
         <label>Clave de acceso</label>
-        <input id="localClaveInput" type="password" placeholder="Clave del local" autocomplete="off" style="text-align:center;font-size:18px;letter-spacing:.15em" onkeydown="if(event.key==='Enter')confirmarLoginLocal()">
+        <input id="localClaveInput" type="password" placeholder="Clave del local o PIN personal" autocomplete="off" style="text-align:center;font-size:18px;letter-spacing:.15em" onkeydown="if(event.key==='Enter')confirmarLoginLocal()">
       </div>
       <div id="localClaveError" style="color:var(--rose);font-size:12px;font-family:var(--mono);text-align:center;margin-top:6px;display:none">❌ Clave incorrecta. Intentá de nuevo.</div>
     </div>
@@ -2939,8 +2935,7 @@ function mostrarLoginLocal() {
 }
 async function confirmarLoginLocal() {
   const clave = document.getElementById('localClaveInput').value;
-  const usuario = document.getElementById('localUsuarioInput')?.value.trim() || '';
-  let nivel = null, nombreFinal = usuario, tokenObtenido = null;
+  let nivel = null, nombreFinal = '', tokenObtenido = null;
 
   // 1. Verificar contra el PIN de local (operador/admin) — validación server-side
   if (clave.length >= 3) {
@@ -2953,7 +2948,7 @@ async function confirmarLoginLocal() {
       const data = await res.json();
       if (data.ok) {
         nivel = data.rol === 'admin' ? 'admin' : 'cajero';
-        nombreFinal = usuario || (nivel === 'admin' ? 'Gerente' : 'Cajero');
+        nombreFinal = nivel === 'admin' ? 'Gerente' : 'Cajero';
         tokenObtenido = data.token;
       }
     } catch(e) { /* sin conexión, seguimos a intentar PIN de empleado */ }
