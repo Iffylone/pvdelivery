@@ -2281,12 +2281,19 @@ window.addEventListener('load', () => {
 // Cuando el dispositivo vuelve de sleep/hibernación, el WS se corta pero la
 // sesión (sessionStorage) sigue activa. Solo reconectamos, NO pedimos re-login.
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden) return;
+  if (document.hidden) { _wsOcultoDesde = Date.now(); return; }
   const savedRol = sessionStorage.getItem('rol');
   const savedAuth = sessionStorage.getItem('local_auth');
-  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
-    console.log('[Wake] Reconectando WS tras hibernación…');
-    conectarWS();
+  // BUGFIX: antes esto solo reconectaba si ws.readyState decía CLOSED/CLOSING.
+  // En Android, tras apagar pantalla o minimizar unos minutos, el SO mata la
+  // conexión TCP real pero el objeto WebSocket puede seguir reportando OPEN
+  // ("conexión zombie") — por eso hacía falta salir y volver a entrar para
+  // que llegaran pedidos nuevos. Ahora, si estuvo oculta más de 5s, se
+  // fuerza una reconexión real sin importar lo que diga readyState.
+  const estuvoOculta = _wsOcultoDesde && (Date.now() - _wsOcultoDesde > 5000);
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING || estuvoOculta) {
+    console.log('[Wake] Reconectando WS' + (estuvoOculta ? ' (forzado, posible conexión zombie)' : ' tras hibernación') + '…');
+    conectarWS(true);
   }
   setTimeout(async () => {
     try {
@@ -2359,6 +2366,7 @@ setInterval(() => {
 
 // ── WebSocket ────────────────────────────────────────────
 let _wsDelay = 1000; // backoff exponencial
+let _wsOcultoDesde = null;
 let _wsTimer = null;
 
 function getWsUrl() {
@@ -2385,8 +2393,13 @@ function getWsUrl() {
   return (location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host;
 }
 
-function conectarWS() {
-  if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+function conectarWS(forzar) {
+  if (!forzar && ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
+  if (forzar && ws) {
+    // Cerrar la conexión vieja (puede estar "zombie": readyState dice OPEN
+    // pero el SO ya mató la conexión real tras minimizar/apagar pantalla).
+    try { ws.onclose = null; ws.close(); } catch(e) {}
+  }
   try {
     const url = getWsUrl();
     if (!url) { console.warn('No hay URL de servidor configurada'); return; }
@@ -2398,6 +2411,7 @@ function conectarWS() {
       console.log('WS conectado a', url);
     };
     ws.onmessage = e => {
+      _wsUltimoMensaje = Date.now();
       try { handle(JSON.parse(e.data)); } catch(err){ console.error('WS parse error', err); }
     };
     ws.onclose = () => {
@@ -2409,6 +2423,7 @@ function conectarWS() {
     ws.onerror = () => { try{ ws.close(); }catch(x){} };
   } catch(e) { console.error('WS exception', e); _wsTimer = setTimeout(conectarWS, _wsDelay); }
 }
+let _wsUltimoMensaje = Date.now();
 
 // ── Sonido de notificación ───────────────────────────────
 let tipoSonido = localStorage.getItem('tipo_sonido') || 'clasico';
@@ -4812,9 +4827,13 @@ function renderPagos() {
           ${p.comprobante?'<div style="font-size:11px;color:var(--teal)">📎 Tiene comprobante</div>':'<div style="font-size:11px;color:var(--rose)">⚠️ Sin comprobante</div>'}
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          ${_mpStatus?.mpReady ? `<button onclick="pagarConMP(${p.id})" style="background:var(--teal);color:var(--ink);border:none;border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">🟢 Pagar con MP</button>` : ''}
-          <button onclick="confirmarPagoCajero(${p.id})" style="background:var(--teal-bg);color:var(--teal);border:1px solid var(--teal-bd);border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">✅ Aprobar</button>
-          <button onclick="rechazarPagoCajero(${p.id})" style="background:var(--rose-bg);color:var(--rose);border:1px solid var(--rose-bd);border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">✕</button>
+          ${p.mpago === 'transfer' ? `
+            <button onclick="confirmarPagoCajero(${p.id})" style="background:var(--teal-bg);color:var(--teal);border:1px solid var(--teal-bd);border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">✅ Aprobar (revisé el comprobante)</button>
+            <button onclick="rechazarPagoCajero(${p.id})" style="background:var(--rose-bg);color:var(--rose);border:1px solid var(--rose-bd);border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">✕</button>
+          ` : `
+            <div style="font-size:11px;color:var(--t3);max-width:220px">⏳ Pago con tarjeta — se confirma solo cuando Mercado Pago lo apruebe. Si el cliente no completó el pago, cancelá el pedido.</div>
+            <button onclick="rechazarPagoCajero(${p.id})" style="background:var(--rose-bg);color:var(--rose);border:1px solid var(--rose-bd);border-radius:6px;padding:7px 10px;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans)">✕ Cancelar pedido</button>
+          `}
         </div>
       </div>`).join('')}
     </div>`;
@@ -6214,6 +6233,13 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
     <button onclick="cancelarBrickTarjeta(${pedidoId})" style="background:none;border:none;color:var(--t3);font-size:13px;cursor:pointer;margin-bottom:16px;font-family:var(--sans)">← Volver</button>
     <div style="font-size:18px;font-weight:800;margin-bottom:4px">💳 Pago con Tarjeta</div>
     <div style="font-size:13px;color:var(--t3);margin-bottom:16px">Total: <strong style="color:var(--teal);font-size:16px">$${sub.toLocaleString()}</strong></div>
+    ${publicKey && publicKey.startsWith('TEST-') ? `
+    <div style="padding:10px;background:var(--amber-bg);border:1px solid var(--amber-bd);border-radius:8px;margin-bottom:12px;font-size:12px;color:var(--amber);line-height:1.6">
+      🧪 <strong>Modo de prueba (sandbox) activo.</strong> El resultado del pago no depende de la tarjeta, depende de lo que escribas en "Nombre del titular":<br>
+      <code style="background:var(--ink);padding:1px 5px;border-radius:4px">APRO</code> = aprobado ·
+      <code style="background:var(--ink);padding:1px 5px;border-radius:4px">OTHE</code> = rechazado ·
+      <code style="background:var(--ink);padding:1px 5px;border-radius:4px">CONT</code> = pendiente
+    </div>` : ''}
     <div id="mpBrickContainer"></div>
     <div id="mpBrickMsg" style="margin-top:10px;font-size:13px;text-align:center"></div>
     <div style="padding:10px;background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:8px;margin-top:12px;font-size:12px;color:var(--teal);line-height:1.7">

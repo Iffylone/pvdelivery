@@ -587,6 +587,16 @@ app.put('/api/pedidos/:id/confirmar-pago', requireAuth(), async (q, r) => {
       if (!p) return r.status(404).json({ error: 'No encontrado' });
     }
     if (p.estado !== 'esperando_pago') return r.status(409).json({ ok: false, error: 'Este pedido no está esperando verificación de pago.' });
+    // BUGFIX (seguridad/lógica): antes cualquier pago 'esperando_pago' se
+    // podía aprobar manualmente, incluidos los de tarjeta — pero un pago
+    // con tarjeta no tiene ningún comprobante que un cajero pueda revisar a
+    // ojo; "aprobarlo a mano" es simplemente saltearse el cobro. Solo se
+    // permite la aprobación manual para transferencia (donde sí hay un
+    // comprobante real que mirar). La tarjeta se confirma sola cuando MP
+    // aprueba el pago (webhook / Payment Brick).
+    if (p.mpago === 'tarjeta') {
+      return r.status(403).json({ ok: false, error: 'Los pagos con tarjeta se confirman automáticamente cuando Mercado Pago los aprueba — no se pueden aprobar a mano. Si el cliente no completó el pago, cancelá el pedido.' });
+    }
     p.estado = 'pendiente';
     p.pagado = true;
     p.pagadoPor = q.body?.pagadoPor || q.auth?.rol || 'Cajero';
@@ -1568,8 +1578,21 @@ app.get('/api/asistencia/reporte', requireAuth('admin'), async (q, r) => {
 });
 
 // HTML — debe ir al final, después de todas las rutas /api/
-app.use(express.static(path.join(__dirname, 'public')));
-app.use(express.static(path.join(__dirname)));
+// BUGFIX: sin esto, los navegadores cachean agresivamente el HTML y las
+// imágenes (sobre todo logo-dev.jpg, que cambió de contenido varias veces
+// con el mismo nombre de archivo) — por eso a veces "no se veía" un cambio
+// recién subido: el navegador seguía sirviendo la versión vieja de su
+// caché local, no una versión distinta a la que realmente estaba en el
+// servidor. pvdelivery.html y el logo nunca deben cachearse; los íconos
+// (que casi no cambian) sí pueden, con un tiempo corto.
+app.use((q, r, next) => {
+  if (q.path === '/' || q.path === '/pvdelivery.html' || q.path === '/logo-dev.jpg' || q.path === '/manifest.json' || q.path === '/sw.js') {
+    r.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  }
+  next();
+});
+app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
+app.use(express.static(path.join(__dirname), { maxAge: '1h' }));
 
 // /.well-known/assetlinks.json — necesario para que el APK (TWA) de Android
 // se abra sin la barra de direcciones del navegador. El contenido depende
