@@ -155,7 +155,8 @@ let ram = {
   turnoApertura: null,
   turnoUsuario: null,
   turnoEfectivoInicial: 0,
-  pushSubs: []
+  pushSubs: [],
+  asistencias: []
 };
 
 async function initDB() {
@@ -170,6 +171,7 @@ async function initDB() {
     CREATE TABLE IF NOT EXISTS pagos_sim   (id BIGINT PRIMARY KEY, data JSONB);
     CREATE TABLE IF NOT EXISTS empleados   (id BIGINT PRIMARY KEY, data JSONB);
     CREATE TABLE IF NOT EXISTS push_subs   (id BIGINT PRIMARY KEY, rol TEXT, ref TEXT, endpoint TEXT UNIQUE, data JSONB);
+    CREATE TABLE IF NOT EXISTS asistencias (id BIGINT PRIMARY KEY, empleado_id BIGINT, data JSONB);
   `);
   await pool.query('ALTER TABLE productos ADD COLUMN IF NOT EXISTS imagen TEXT').catch(() => {});
   await pool.query('ALTER TABLE repartidores ADD COLUMN IF NOT EXISTS dni TEXT').catch(() => {});
@@ -207,7 +209,11 @@ async function initDB() {
 // clave/claveAdmin/pin NUNCA deben viajar al cliente, ni por HTTP ni por WS.
 function sinSensibles(db) {
   const { clave, claveAdmin, ...resto } = db;
-  resto.empleados = (resto.empleados || []).map(({ pin, ...e }) => e);
+  resto.empleados = (resto.empleados || []).map(({ pin, tarifaHora, ...e }) => e);
+  // Las asistencias (horarios fichados, notas de gerente, sueldo) nunca se
+  // difunden por WebSocket a todos los conectados — son datos internos de
+  // nómina. Se acceden solo vía /api/asistencia/reporte (admin, autenticado).
+  delete resto.asistencias;
   return resto;
 }
 
@@ -1336,10 +1342,13 @@ app.get('/api/empleados', requireAuth('admin'), async (q, r) => {
 
 app.post('/api/empleados', requireAuth('admin'), async (q, r) => {
   try {
-    const { nombre, rol, pin, foto } = q.body;
+    const { nombre, rol, pin, foto, turnoEntrada, turnoSalida, tarifaHora } = q.body;
     if (!nombre || !pin || String(pin).length !== 4) return r.status(400).json({ error: 'Nombre y PIN de 4 dígitos requeridos' });
     const id = Date.now();
-    const emp = { id, nombre, rol: rol || 'cajero', pin: hashPin(pin), activo: true, foto: foto||null, creadoEn: new Date().toISOString() };
+    const emp = {
+      id, nombre, rol: rol || 'cajero', pin: hashPin(pin), activo: true, foto: foto||null, creadoEn: new Date().toISOString(),
+      turnoEntrada: turnoEntrada || null, turnoSalida: turnoSalida || null, tarifaHora: Number(tarifaHora) || 0
+    };
     if (useDB) {
       await pool.query('ALTER TABLE empleados ADD COLUMN IF NOT EXISTS data JSONB').catch(()=>{});
       await pool.query('INSERT INTO empleados(id,data) VALUES($1,$2) ON CONFLICT(id) DO UPDATE SET data=$2', [id, JSON.stringify(emp)]);
@@ -1356,7 +1365,7 @@ app.post('/api/empleados', requireAuth('admin'), async (q, r) => {
 app.put('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
-    const { nombre, rol, pin, activo } = q.body;
+    const { nombre, rol, pin, activo, turnoEntrada, turnoSalida, tarifaHora } = q.body;
     let emp;
     if (useDB) {
       const res = await pool.query('SELECT data FROM empleados WHERE id=$1', [id]);
@@ -1370,6 +1379,9 @@ app.put('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
     if (rol !== undefined) emp.rol = rol;
     if (pin !== undefined) emp.pin = hashPin(pin);
     if (activo !== undefined) emp.activo = activo;
+    if (turnoEntrada !== undefined) emp.turnoEntrada = turnoEntrada || null;
+    if (turnoSalida !== undefined) emp.turnoSalida = turnoSalida || null;
+    if (tarifaHora !== undefined) emp.tarifaHora = Number(tarifaHora) || 0;
     if (useDB) await pool.query('UPDATE empleados SET data=$1 WHERE id=$2', [JSON.stringify(emp), id]);
     await bcast('DATOS_ACTUALIZADOS', {});
     const { pin: _p, ...empSinPin } = emp;
@@ -1412,6 +1424,147 @@ app.post('/api/empleados/login', loginLimiter, async (q, r) => {
     const token = firmarToken({ rol: encontrado.rol || 'cajero', empleadoId: encontrado.id });
     r.json({ ok: true, empleado: empSinPin, token });
   } catch(e) { r.status(500).json({ error: e.message }); }
+});
+
+// ── CONTROL DE ASISTENCIA ──────────────────────────────────────
+async function _empleadoPorId(id) {
+  if (useDB) {
+    const res = await pool.query('SELECT data FROM empleados WHERE id=$1', [id]);
+    return res.rows.length ? res.rows[0].data : null;
+  }
+  return (ram.empleados || []).find(e => e.id === id) || null;
+}
+async function _asistenciasDe(empleadoId) {
+  if (useDB) {
+    const res = await pool.query('SELECT data FROM asistencias WHERE empleado_id=$1 ORDER BY id', [empleadoId]);
+    return res.rows.map(x => x.data);
+  }
+  return (ram.asistencias || []).filter(a => a.empleadoId === empleadoId);
+}
+async function _guardarAsistencia(a) {
+  if (useDB) {
+    await pool.query('INSERT INTO asistencias(id,empleado_id,data) VALUES($1,$2,$3) ON CONFLICT(id) DO UPDATE SET data=$3', [a.id, a.empleadoId, JSON.stringify(a)]);
+  } else {
+    if (!ram.asistencias) ram.asistencias = [];
+    const i = ram.asistencias.findIndex(x => x.id === a.id);
+    if (i >= 0) ram.asistencias[i] = a; else ram.asistencias.push(a);
+  }
+}
+function _hoyStr() { return new Date().toISOString().slice(0, 10); }
+function _hhmmAhora() { return new Date().toTimeString().slice(0, 5); }
+
+// POST /api/asistencia/entrada — el empleado ficha su propia entrada. La
+// identidad sale del token (empleadoId), NUNCA del body — así nadie puede
+// fichar por otro.
+app.post('/api/asistencia/entrada', requireAuth(), async (q, r) => {
+  try {
+    const empleadoId = q.auth?.empleadoId;
+    if (!empleadoId) return r.status(400).json({ ok: false, error: 'Esta cuenta no tiene un empleado asociado.' });
+    const emp = await _empleadoPorId(empleadoId);
+    if (!emp) return r.status(404).json({ ok: false, error: 'Empleado no encontrado.' });
+    const hoy = _hoyStr();
+    const existentes = await _asistenciasDe(empleadoId);
+    const abierta = existentes.find(a => a.fecha === hoy && !a.horaSalida);
+    if (abierta) return r.status(409).json({ ok: false, error: 'Ya tenés una entrada fichada hoy sin cerrar.' });
+    const a = {
+      id: Date.now(), empleadoId, empleadoNombre: emp.nombre,
+      fecha: hoy, horaEntrada: _hhmmAhora(), horaEntradaTs: new Date().toISOString(),
+      turnoSalidaEsperado: emp.turnoSalida || null,
+      horaSalida: null, horaSalidaTs: null, salioAntes: false, autorizadoPor: null, nota: null,
+      horasTrabajadas: null, tarifaHoraSnapshot: emp.tarifaHora || 0, pago: null
+    };
+    await _guardarAsistencia(a);
+    r.json({ ok: true, asistencia: a });
+  } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
+});
+
+// POST /api/asistencia/salida — cierra la jornada abierta de hoy. Si es
+// antes de la hora de salida programada, exige el PIN de un gerente/admin
+// + nota. La autorización se valida en el servidor, nunca se confía en lo
+// que mande el frontend sobre si "está autorizado".
+app.post('/api/asistencia/salida', requireAuth(), async (q, r) => {
+  try {
+    const empleadoId = q.auth?.empleadoId;
+    if (!empleadoId) return r.status(400).json({ ok: false, error: 'Esta cuenta no tiene un empleado asociado.' });
+    const hoy = _hoyStr();
+    const existentes = await _asistenciasDe(empleadoId);
+    const abierta = existentes.find(a => a.fecha === hoy && !a.horaSalida);
+    if (!abierta) return r.status(409).json({ ok: false, error: 'No tenés una entrada fichada hoy.' });
+
+    const horaAhora = _hhmmAhora();
+    const salioAntes = abierta.turnoSalidaEsperado ? (horaAhora < abierta.turnoSalidaEsperado) : false;
+    let autorizadoPor = null;
+
+    if (salioAntes) {
+      const { pinGerente, nota } = q.body;
+      if (!nota || !nota.trim()) return r.status(400).json({ ok: false, error: 'Salida anticipada: la nota es obligatoria.' });
+      if (!pinGerente) return r.status(400).json({ ok: false, error: 'Salida anticipada: necesitás el PIN de un gerente para autorizar.' });
+      // Validar el PIN: puede ser la clave general de admin, o el PIN de un
+      // empleado con rol gerente/admin.
+      let autorizado = false;
+      const dbActual = await getDBInterna();
+      if (pinGerente === dbActual.claveAdmin) { autorizado = true; autorizadoPor = 'Administrador'; }
+      if (!autorizado) {
+        const emps = useDB ? (await pool.query('SELECT data FROM empleados')).rows.map(x=>x.data) : (ram.empleados||[]);
+        for (const e of emps) {
+          if (e.activo === false) continue;
+          if (e.rol !== 'gerente') continue;
+          const chk = verificarPin(pinGerente, e.pin);
+          if (chk.ok) { autorizado = true; autorizadoPor = e.nombre; break; }
+        }
+      }
+      if (!autorizado) return r.status(403).json({ ok: false, error: 'PIN de gerente inválido.' });
+      abierta.nota = nota.trim();
+    }
+
+    abierta.horaSalida = horaAhora;
+    abierta.horaSalidaTs = new Date().toISOString();
+    abierta.salioAntes = salioAntes;
+    abierta.autorizadoPor = autorizadoPor;
+    const ms = new Date(abierta.horaSalidaTs) - new Date(abierta.horaEntradaTs);
+    abierta.horasTrabajadas = Math.round((ms / 3600000) * 100) / 100;
+    abierta.pago = Math.round(abierta.horasTrabajadas * (abierta.tarifaHoraSnapshot || 0));
+    await _guardarAsistencia(abierta);
+    r.json({ ok: true, asistencia: abierta });
+  } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/asistencia/hoy — estado de fichado de HOY del empleado logueado.
+app.get('/api/asistencia/hoy', requireAuth(), async (q, r) => {
+  try {
+    const empleadoId = q.auth?.empleadoId;
+    if (!empleadoId) return r.json({ ok: true, asistencia: null });
+    const hoy = _hoyStr();
+    const existentes = await _asistenciasDe(empleadoId);
+    const deHoy = existentes.filter(a => a.fecha === hoy).sort((a,b)=>b.id-a.id)[0] || null;
+    r.json({ ok: true, asistencia: deHoy });
+  } catch(e) { r.status(500).json({ ok: false, error: e.message }); }
+});
+
+// GET /api/asistencia/reporte?empleadoId=&desde=&hasta= — para armar la
+// nómina. Solo admin.
+app.get('/api/asistencia/reporte', requireAuth('admin'), async (q, r) => {
+  try {
+    const { empleadoId, desde, hasta } = q.query;
+    let lista;
+    if (useDB) {
+      if (empleadoId) {
+        const res = await pool.query('SELECT data FROM asistencias WHERE empleado_id=$1 ORDER BY id', [parseInt(empleadoId)]);
+        lista = res.rows.map(x => x.data);
+      } else {
+        const res = await pool.query('SELECT data FROM asistencias ORDER BY id');
+        lista = res.rows.map(x => x.data);
+      }
+    } else {
+      lista = ram.asistencias || [];
+      if (empleadoId) lista = lista.filter(a => a.empleadoId === parseInt(empleadoId));
+    }
+    if (desde) lista = lista.filter(a => a.fecha >= desde);
+    if (hasta) lista = lista.filter(a => a.fecha <= hasta);
+    const totalHoras = lista.reduce((s,a) => s + (a.horasTrabajadas || 0), 0);
+    const totalPago = lista.reduce((s,a) => s + (a.pago || 0), 0);
+    r.json({ ok: true, jornadas: lista, totalHoras: Math.round(totalHoras*100)/100, totalPago });
+  } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
 });
 
 // HTML — debe ir al final, después de todas las rutas /api/

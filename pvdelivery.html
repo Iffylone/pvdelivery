@@ -889,6 +889,10 @@ select option { background: var(--ink3); }
       <button class="hdr-btn" onclick="cerrarJornadaLocal()" style="color:var(--rose)">⇥ Salir</button>
     </div>
   </div>
+  <div id="fichajeWidget" style="display:none;padding:8px 16px;background:var(--ink3);border-bottom:1px solid var(--line);align-items:center;justify-content:space-between;gap:10px;font-size:12px">
+    <div id="fichajeEstado" style="color:var(--t2)">—</div>
+    <div id="fichajeAcciones"></div>
+  </div>
   <div class="tabs-wrap">
     <div class="tabs" id="tabsL">
       <div class="tab on" onclick="goL('nuevo')"><span class="tab-ic">✦</span>Nuevo</div>
@@ -1545,6 +1549,7 @@ select option { background: var(--ink3); }
       <div class="tab" onclick="goAdmin('clientes')"><span class="tab-ic">👥</span>Clientes</div>
       <div class="tab" onclick="goAdmin('empleados')"><span class="tab-ic">👔</span>Empleados</div>
       <div class="tab" onclick="goAdmin('riders')"><span class="tab-ic">🛵</span>Riders</div>
+      <div class="tab" onclick="goAdmin('nomina')"><span class="tab-ic">🕐</span>Nómina</div>
       <div class="tab" onclick="goAdmin('productos')"><span class="tab-ic">🍔</span>Productos</div>
       <div class="tab" onclick="goAdmin('config')"><span class="tab-ic">⚙️</span>Config</div>
     </div>
@@ -1560,6 +1565,7 @@ select option { background: var(--ink3); }
     <div class="admin-nav-item" id="anav-clientes" onclick="goAdmin('clientes')"><span class="ani">👥</span>Clientes</div>
     <div class="admin-nav-item" id="anav-empleados" onclick="goAdmin('empleados')"><span class="ani">👔</span>Empleados</div>
     <div class="admin-nav-item" id="anav-riders" onclick="goAdmin('riders')"><span class="ani">🛵</span>Riders</div>
+    <div class="admin-nav-item" id="anav-nomina" onclick="goAdmin('nomina')"><span class="ani">🕐</span>Nómina</div>
     <div class="admin-nav-sep">Sistema</div>
     <div class="admin-nav-item" id="anav-productos" onclick="goAdmin('productos')"><span class="ani">🍔</span>Productos</div>
     <div class="admin-nav-item" id="anav-config" onclick="goAdmin('config')"><span class="ani">⚙️</span>Configuración</div>
@@ -1615,6 +1621,11 @@ select option { background: var(--ink3); }
           </select>
         </div>
       </div>
+      <div class="row2">
+        <div class="fl"><label>Entrada de turno</label><input id="adminEmpTurnoEntrada" type="time"></div>
+        <div class="fl"><label>Salida de turno</label><input id="adminEmpTurnoSalida" type="time"></div>
+      </div>
+      <div class="fl"><label>Tarifa por hora (para nómina)</label><input id="adminEmpTarifa" type="number" min="0" placeholder="0"></div>
       <div class="fl">
         <label>Foto / Selfie del empleado (se mostrará al ingresar)</label>
         <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
@@ -1683,6 +1694,31 @@ select option { background: var(--ink3); }
       <div id="adminListaRiders"></div>
     </div>
   </div><!-- admin-2col -->
+  </div>
+
+  <!-- NÓMINA / ASISTENCIA ADMIN -->
+  <div class="pg" id="pgAdmin-nomina">
+    <div class="card">
+      <div class="card-title">🕐 Control de asistencia y nómina</div>
+      <div class="row2">
+        <div class="fl"><label>Empleado</label>
+          <select id="nominaEmpleadoSel"><option value="">Todos los empleados</option></select>
+        </div>
+        <div class="fl"></div>
+      </div>
+      <div class="row2">
+        <div class="fl"><label>Desde</label><input type="date" id="nominaDesde"></div>
+        <div class="fl"><label>Hasta</label><input type="date" id="nominaHasta"></div>
+      </div>
+      <button class="btn btn-teal" onclick="cargarReporteNomina()">🔎 Generar reporte</button>
+    </div>
+    <div class="card">
+      <div id="nominaTotales" style="display:none;margin-bottom:14px;padding:14px;background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:10px;display:flex;gap:24px">
+        <div><div style="font-size:11px;color:var(--t3);font-family:var(--mono)">TOTAL HORAS</div><div style="font-size:22px;font-weight:800;color:var(--teal)" id="nominaTotalHoras">0</div></div>
+        <div><div style="font-size:11px;color:var(--t3);font-family:var(--mono)">TOTAL A PAGAR</div><div style="font-size:22px;font-weight:800;color:var(--teal)" id="nominaTotalPago">$0</div></div>
+      </div>
+      <div id="nominaLista"><div style="font-family:var(--mono);font-size:12px;color:var(--t3)">Elegí un rango de fechas y generá el reporte.</div></div>
+    </div>
   </div>
 
   <!-- PRODUCTOS ADMIN -->
@@ -2688,11 +2724,88 @@ async function api(method, path, body) {
 }
 
 // ── ROL ──────────────────────────────────────────────────
+// ── CONTROL DE ASISTENCIA (fichado de entrada/salida) ──────────
+async function renderFichajeWidget() {
+  const widget = document.getElementById('fichajeWidget');
+  const empleadoId = sessionStorage.getItem('empleadoId');
+  if (!widget) return;
+  if (!empleadoId) { widget.style.display = 'none'; return; }
+  widget.style.display = 'flex';
+  const estadoEl = document.getElementById('fichajeEstado');
+  const accEl = document.getElementById('fichajeAcciones');
+  estadoEl.textContent = 'Cargando...';
+  accEl.innerHTML = '';
+  try {
+    const data = await api('GET', '/asistencia/hoy');
+    const a = data?.asistencia;
+    if (!a || a.horaSalida) {
+      // Sin fichar hoy, o ya cerró su jornada — puede fichar entrada de nuevo
+      estadoEl.textContent = a ? '✅ Jornada cerrada hoy (' + a.horaEntrada + ' – ' + a.horaSalida + ')' : '⏱️ Todavía no fichaste entrada hoy';
+      accEl.innerHTML = `<button class="btn btn-teal" style="width:auto;padding:6px 14px;font-size:12px" onclick="ficharEntrada()">🕐 Marcar entrada</button>`;
+    } else {
+      estadoEl.textContent = '🟢 Entrada: ' + a.horaEntrada + (a.turnoSalidaEsperado ? ' · Salida esperada: ' + a.turnoSalidaEsperado : '');
+      accEl.innerHTML = `<button class="btn btn-amber" style="width:auto;padding:6px 14px;font-size:12px" onclick="ficharSalida()">🕐 Marcar salida</button>`;
+    }
+  } catch(e) { estadoEl.textContent = 'No se pudo cargar el estado de fichado'; }
+}
+
+async function ficharEntrada() {
+  try {
+    const data = await api('POST', '/asistencia/entrada', {});
+    if (data?.ok) { toast('🕐 Entrada registrada — ' + data.asistencia.horaEntrada, 'ok'); renderFichajeWidget(); }
+    else toast(data?.error || 'No se pudo fichar la entrada', 'warn');
+  } catch(e) { toast('Error de conexión', 'warn'); }
+}
+
+async function ficharSalida(pinGerente, nota) {
+  try {
+    const data = await api('POST', '/asistencia/salida', { pinGerente, nota });
+    if (data?.ok) {
+      toast('🕐 Salida registrada — ' + data.asistencia.horaSalida + (data.asistencia.horasTrabajadas ? ' · ' + data.asistencia.horasTrabajadas + ' hs' : ''), 'ok');
+      renderFichajeWidget();
+      return;
+    }
+    // Si el error es porque salió antes de hora, pedir autorización de gerente
+    if (data?.error?.includes('Salida anticipada')) {
+      abrirModalSalidaAnticipada();
+      return;
+    }
+    toast(data?.error || 'No se pudo fichar la salida', 'warn');
+  } catch(e) { toast('Error de conexión', 'warn'); }
+}
+
+function abrirModalSalidaAnticipada() {
+  const div = document.createElement('div');
+  div.id = 'modalSalidaAnticipada';
+  div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:9500;display:flex;align-items:center;justify-content:center;padding:20px';
+  div.innerHTML = `
+    <div style="background:var(--ink2);border:1px solid var(--amber-bd);border-radius:14px;max-width:380px;width:100%;padding:22px">
+      <div style="font-size:18px;font-weight:800;margin-bottom:6px;color:var(--amber)">⚠️ Salida anticipada</div>
+      <div style="font-size:13px;color:var(--t2);margin-bottom:16px;line-height:1.6">Todavía no terminó tu jornada. Para salir antes, un gerente tiene que autorizarlo con su PIN.</div>
+      <div class="fl"><label>Motivo (obligatorio)</label><textarea id="notaSalidaAnticipada" placeholder="Ej: turno médico, autorizado por..." style="width:100%;min-height:60px;background:var(--ink);border:1px solid var(--line);border-radius:8px;padding:10px;color:var(--t1);font-family:var(--sans);font-size:13px;resize:vertical"></textarea></div>
+      <div class="fl" style="margin-top:10px"><label>PIN del gerente</label><input id="pinGerenteSalida" type="password" maxlength="4" placeholder="••••" style="text-align:center;font-size:18px;letter-spacing:.2em"></div>
+      <button class="btn btn-amber" style="margin-top:14px" onclick="confirmarSalidaAnticipada()">Confirmar salida</button>
+      <button class="btn btn-ghost" style="margin-top:8px" onclick="document.getElementById('modalSalidaAnticipada').remove()">Cancelar</button>
+    </div>`;
+  document.body.appendChild(div);
+  setTimeout(() => document.getElementById('notaSalidaAnticipada')?.focus(), 100);
+}
+
+async function confirmarSalidaAnticipada() {
+  const nota = document.getElementById('notaSalidaAnticipada')?.value.trim() || '';
+  const pin = document.getElementById('pinGerenteSalida')?.value.trim() || '';
+  if (!nota) { toast('El motivo es obligatorio', 'warn'); return; }
+  if (!pin) { toast('Falta el PIN del gerente', 'warn'); return; }
+  document.getElementById('modalSalidaAnticipada')?.remove();
+  await ficharSalida(pin, nota);
+}
+
 function entrarLocal() {
   rol = 'local'; sessionStorage.setItem('rol','local');
   document.getElementById('roleScreen').classList.remove('show');
   document.getElementById('appLocal').classList.add('show');
   syncSelects(); renderAll(); conectarWS();
+  renderFichajeWidget();
 }
 async function mostrarLoginRep() {
   // ── Verificar turno activo ────────────────────────────────
@@ -2936,6 +3049,7 @@ function mostrarLoginLocal() {
 async function confirmarLoginLocal() {
   const clave = document.getElementById('localClaveInput').value;
   let nivel = null, nombreFinal = '', tokenObtenido = null;
+  sessionStorage.removeItem('empleadoId');
 
   // 1. Verificar contra el PIN de local (operador/admin) — validación server-side
   if (clave.length >= 3) {
@@ -2971,6 +3085,7 @@ async function confirmarLoginLocal() {
         else if (emp.rol === 'cocinero') nivel = 'cocinero';
         else nivel = 'cajero'; // cajero, mozo, administrativo
         nombreFinal = emp.nombre;
+        sessionStorage.setItem('empleadoId', String(emp.id));
         // Mostrar foto del empleado si existe
         if (emp.foto) {
           const fotoDiv = document.createElement('div');
@@ -3245,6 +3360,7 @@ function cerrarJornadaLocal() {
   sessionStorage.removeItem('local_nivel');
   sessionStorage.removeItem('local_usuario');
   sessionStorage.removeItem('rol');
+  sessionStorage.removeItem('empleadoId');
   // Limpiar backup también (logout explícito)
   localStorage.removeItem('local_auth_bk');
   localStorage.removeItem('local_nivel_bk');
@@ -6684,7 +6800,7 @@ function cerrarSesionAdmin() {
   location.reload();
 }
 
-const ADMIN_TABS = ['pedidos','clientes','empleados','riders','productos','config'];
+const ADMIN_TABS = ['pedidos','clientes','empleados','riders','nomina','productos','config'];
 function goAdmin(t) {
   ADMIN_TABS.forEach(x => {
     document.getElementById('pgAdmin-'+x)?.classList.toggle('on', x===t);
@@ -6699,6 +6815,7 @@ function goAdmin(t) {
   if(t==='clientes') renderAdminClientes();
   if(t==='empleados') renderAdminEmpleados();
   if(t==='riders') renderAdminRiders();
+  if(t==='nomina') poblarSelectNomina();
   if(t==='productos') renderAdminProductos();
   if(t==='config') renderAdminConfig();
 }
@@ -6804,6 +6921,45 @@ function renderAdminClientes() {
     </div>`).join('');
 }
 
+function poblarSelectNomina() {
+  const sel = document.getElementById('nominaEmpleadoSel');
+  if (!sel) return;
+  const emps = db.empleados || [];
+  sel.innerHTML = '<option value="">Todos los empleados</option>' +
+    emps.map(e => `<option value="${e.id}">${e.nombre} (${e.rol})</option>`).join('');
+}
+
+async function cargarReporteNomina() {
+  const empleadoId = document.getElementById('nominaEmpleadoSel').value;
+  const desde = document.getElementById('nominaDesde').value;
+  const hasta = document.getElementById('nominaHasta').value;
+  const listaEl = document.getElementById('nominaLista');
+  listaEl.innerHTML = '<div style="font-family:var(--mono);font-size:12px;color:var(--t3)">Cargando...</div>';
+  let qs = [];
+  if (empleadoId) qs.push('empleadoId=' + empleadoId);
+  if (desde) qs.push('desde=' + desde);
+  if (hasta) qs.push('hasta=' + hasta);
+  const data = await api('GET', '/asistencia/reporte' + (qs.length ? '?' + qs.join('&') : ''));
+  if (!data?.ok) { listaEl.innerHTML = '<div style="color:var(--rose);font-size:12px">Error al generar el reporte.</div>'; return; }
+  const totEl = document.getElementById('nominaTotales');
+  totEl.style.display = 'flex';
+  document.getElementById('nominaTotalHoras').textContent = data.totalHoras + ' hs';
+  document.getElementById('nominaTotalPago').textContent = '$' + data.totalPago.toLocaleString();
+  if (!data.jornadas.length) { listaEl.innerHTML = '<div style="font-family:var(--mono);font-size:12px;color:var(--t3)">Sin jornadas en ese rango.</div>'; return; }
+  listaEl.innerHTML = data.jornadas.slice().reverse().map(j => `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--ink3);border-radius:8px;margin-bottom:8px;${j.salioAntes?'border-left:3px solid var(--amber)':''}">
+      <div style="flex:1">
+        <div style="font-weight:700;font-size:13px">${j.empleadoNombre} <span style="font-weight:400;color:var(--t3);font-size:11px">· ${j.fecha}</span></div>
+        <div style="font-size:12px;color:var(--t2);font-family:var(--mono)">${j.horaEntrada} → ${j.horaSalida || '(jornada abierta)'}</div>
+        ${j.salioAntes ? `<div style="font-size:11px;color:var(--amber);margin-top:2px">⚠️ Salida anticipada — autorizó ${j.autorizadoPor||'—'}: "${j.nota||''}"</div>` : ''}
+      </div>
+      <div style="text-align:right">
+        <div style="font-weight:800;color:var(--teal)">${j.horasTrabajadas!=null ? j.horasTrabajadas+' hs' : '—'}</div>
+        <div style="font-size:12px;color:var(--t3)">${j.pago!=null ? '$'+j.pago.toLocaleString() : '—'}</div>
+      </div>
+    </div>`).join('');
+}
+
 function renderAdminEmpleados() {
   const div = document.getElementById('adminListaEmpleados'); if(!div) return;
   const emps = db.empleados || [];
@@ -6814,13 +6970,27 @@ function renderAdminEmpleados() {
       ${e.foto?`<img src="${e.foto}" style="width:48px;height:48px;border-radius:50%;object-fit:cover;flex-shrink:0;border:2px solid var(--line)">`:`<div style="width:48px;height:48px;border-radius:50%;background:var(--ink2);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">${rolIc[e.rol]||'👤'}</div>`}
       <div style="flex:1">
         <div style="font-weight:700;font-size:14px">${e.nombre}</div>
-        <div style="font-family:var(--mono);font-size:10px;color:var(--t3)">${e.rol} · PIN: <span style="color:var(--teal);letter-spacing:.15em">${e.pin}</span></div>
+        <div style="font-family:var(--mono);font-size:10px;color:var(--t3)">${e.rol}</div>
+        <div style="font-size:11px;color:var(--t3)">${e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida : '🕐 Sin turno asignado'}</div>
       </div>
       <div style="display:flex;gap:6px">
+        <button onclick="editarTurnoEmpleadoAdmin(${e.id},'${e.turnoEntrada||''}','${e.turnoSalida||''}','${e.tarifaHora||0}')" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer">🕐 Turno</button>
         <button onclick="cambiarPinEmpleadoAdmin(${e.id})" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer;font-family:var(--mono)">✏️ PIN</button>
         <button class="rm" onclick="delEmpleadoAdmin(${e.id})" style="color:var(--rose)">✕</button>
       </div>
     </div>`).join('');
+}
+
+async function editarTurnoEmpleadoAdmin(id, turnoEntradaActual, turnoSalidaActual, tarifaActual) {
+  const entrada = prompt('Hora de entrada del turno (HH:MM, 24hs):', turnoEntradaActual || '');
+  if (entrada === null) return;
+  const salida = prompt('Hora de salida del turno (HH:MM, 24hs):', turnoSalidaActual || '');
+  if (salida === null) return;
+  const tarifa = prompt('Tarifa por hora (para nómina):', tarifaActual || '0');
+  if (tarifa === null) return;
+  const res = await api('PUT', `/empleados/${id}`, { turnoEntrada: entrada || null, turnoSalida: salida || null, tarifaHora: Number(tarifa) || 0 });
+  if (res?.ok) { toast('✅ Turno actualizado', 'ok'); renderAdminEmpleados(); }
+  else toast('Error al actualizar el turno', 'warn');
 }
 
 function previewAdminEmpFoto(input) {
@@ -6840,9 +7010,15 @@ async function addEmpleadoAdmin() {
   do { pin = String(Math.floor(1000 + Math.random() * 9000)); } while (usados.includes(pin));
   const fotoEl = document.getElementById('adminEmpFotoPreview');
   const foto = fotoEl._data || null;
-  const res = await api('POST', '/empleados', { nombre: nom, rol: rol_emp, pin, foto });
+  const turnoEntrada = document.getElementById('adminEmpTurnoEntrada').value || null;
+  const turnoSalida = document.getElementById('adminEmpTurnoSalida').value || null;
+  const tarifaHora = document.getElementById('adminEmpTarifa').value || 0;
+  const res = await api('POST', '/empleados', { nombre: nom, rol: rol_emp, pin, foto, turnoEntrada, turnoSalida, tarifaHora });
   if (res?.ok) {
     document.getElementById('adminEmpNom').value = '';
+    document.getElementById('adminEmpTurnoEntrada').value = '';
+    document.getElementById('adminEmpTurnoSalida').value = '';
+    document.getElementById('adminEmpTarifa').value = '';
     document.getElementById('adminEmpFotoPreview').innerHTML = '👤';
     document.getElementById('adminEmpFotoPreview')._data = null;
     document.getElementById('adminNuevoPinBox').style.display = 'block';
