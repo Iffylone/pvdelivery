@@ -51,6 +51,7 @@ const express   = require('express');
 const http      = require('http');
 const WebSocket = require('ws');
 const path      = require('path');
+const fs        = require('fs');
 const crypto    = require('crypto');
 const webpush   = require('web-push');
 const { hashPin, verificarPin, firmarToken, verificarToken, requireAuth, loginLimiter, apiLimiter } = require('./auth');
@@ -473,7 +474,13 @@ app.get('/api/repartidores/:id/verificar', async (q, r) => {
     }
     if (!rep) return r.status(200).json({ ok: false, error: 'ID no encontrado' });
     if (rep.activo === false) return r.status(200).json({ ok: false, error: 'Repartidor inactivo' });
-    r.status(200).json({ ok: true, rep });
+    // Rider JWT — fase 1 (solo emisión + logging, todavía NO se exige en
+    // ningún endpoint). El plan es: unos días registrando en los logs si el
+    // token llega bien en las acciones del rider (estado, ubicación), y
+    // recién después de confirmar que no rompe nada en producción, pasar a
+    // exigirlo de verdad. Ver /api/pedidos/:id/estado y /ubicacion.
+    const token = firmarToken({ rol: 'rep', repId: rep.id });
+    r.status(200).json({ ok: true, rep, token });
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
@@ -515,6 +522,10 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     const { estado, cobro, horaEntrega, repId, repNombre } = q.body;
+    // Rider JWT — fase 1, solo log (ver chequearAuthRiderSoloLog arriba).
+    if (estado === 'camino' || estado === 'entregado' || estado === 'no_pudo_entregar') {
+      chequearAuthRiderSoloLog(q, 'estado:' + estado);
+    }
     let p;
     if (useDB) {
       const res = await pool.query('SELECT data FROM pedidos WHERE id=$1', [id]);
@@ -822,8 +833,29 @@ app.put('/api/repartidores/:id', requireAuth('admin'), async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
+// ── Rider JWT — fase 1: solo observar, no bloquear ──────────
+// Ver nota en /api/repartidores/:id/verificar. Este helper chequea si vino
+// un token de rider válido, pero SOLO loguea — nunca corta la request. La
+// idea es mirar los logs de Render unos días y recién ahí, con datos reales
+// de cuántos repartidores ya están mandando el token, decidir si conviene
+// pasar a bloquear de verdad.
+const _repSinTokenLogueados = new Set();
+function chequearAuthRiderSoloLog(q, contexto) {
+  const header = q.headers.authorization || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const auth = token ? verificarToken(token) : null;
+  if (!auth || auth.rol !== 'rep') {
+    const clave = contexto + ':' + (q.params.id || q.body?.repId || '?');
+    if (!_repSinTokenLogueados.has(clave)) {
+      _repSinTokenLogueados.add(clave);
+      console.warn(`[RIDER-AUTH] Sin token válido en ${contexto} (repId aprox: ${q.params.id||q.body?.repId||'desconocido'}) — todavía no se bloquea, solo se registra.`);
+    }
+  }
+}
+
 app.put('/api/repartidores/:id/ubicacion', async (q, r) => {
   try {
+    chequearAuthRiderSoloLog(q, 'ubicacion');
     const id = parseInt(q.params.id);
     const { lat, lng } = q.body;
     if (useDB) {
@@ -1609,6 +1641,33 @@ app.use((q, r, next) => {
   }
   next();
 });
+
+// BUGFIX: logo-dev.jpg venía fallando en producción (se veía el fallback de
+// texto "IFFYWARE SYSTEMS" en vez del logo real) — el HTML lo pide como
+// "logo-dev.jpg" (raíz relativa a la página), pero según cómo haya quedado
+// organizado el repo puede estar en la raíz, en /public o en /public/icons,
+// y los dos express.static de abajo solo revisan la raíz de cada carpeta que
+// apuntan, no subcarpetas arbitrarias. En vez de seguir adivinando dónde
+// está, este endpoint prueba TODAS las ubicaciones conocidas del repo y
+// sirve la primera que encuentre — y si no encuentra ninguna, lo dice en el
+// log del servidor (Render → Logs) en vez de fallar en silencio.
+app.get('/logo-dev.jpg', (q, r) => {
+  const candidatos = [
+    path.join(__dirname, 'logo-dev.jpg'),
+    path.join(__dirname, 'public', 'logo-dev.jpg'),
+    path.join(__dirname, 'public', 'icons', 'logo-dev.jpg'),
+    path.join(__dirname, 'electron', 'logo-dev.jpg'),
+  ];
+  const encontrado = candidatos.find(c => fs.existsSync(c));
+  if (!encontrado) {
+    console.warn('[LOGO] logo-dev.jpg no se encontró en ninguna de estas rutas:', candidatos);
+    return r.status(404).send('logo-dev.jpg no encontrado en el servidor — revisar que el archivo esté subido al repo (ver logs)');
+  }
+  r.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  r.setHeader('Content-Type', 'image/jpeg');
+  r.sendFile(encontrado);
+});
+
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 app.use(express.static(path.join(__dirname), { maxAge: '1h' }));
 

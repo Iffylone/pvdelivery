@@ -2508,7 +2508,13 @@ function handle(msg) {
       const savedId = parseInt(localStorage.getItem('rep_id')||'0');
       if (savedId) {
         const rep = db.repartidores.find(r => r.id === savedId);
-        if (rep && rep.activo !== false) { miRepNom = rep.nombre; miRepId = rep.id; activarRep(); }
+        if (rep && rep.activo !== false) {
+          miRepNom = rep.nombre; miRepId = rep.id;
+          fetch(getApiBase() + '/api/repartidores/' + savedId + '/verificar')
+            .then(r => r.json()).then(d => { if (d.ok && d.token) sessionStorage.setItem('authToken', d.token); })
+            .catch(()=>{});
+          activarRep();
+        }
         else { localStorage.removeItem('rep_id'); localStorage.removeItem('rep_nombre'); toast('ID no encontrado, ingresá nuevamente','warn'); }
       }
     }
@@ -2879,6 +2885,7 @@ async function verificarIdRep() {
   if (btn) { btn.textContent = 'Verificando...'; btn.disabled = true; }
 
   let rep = null;
+  let repTokenTemp = null;
 
   // 1. Buscar en db local (si ya está cargado por WS)
   if (db.repartidores && db.repartidores.length > 0) {
@@ -2906,6 +2913,7 @@ async function verificarIdRep() {
         return;
       }
       rep = data.rep;
+      repTokenTemp = data.token || null;
     } catch(e) {
       console.error('verificarIdRep error:', e);
       if (btn) { btn.textContent = 'Verificar ID →'; btn.disabled = false; }
@@ -2923,6 +2931,17 @@ async function verificarIdRep() {
   if (btn) { btn.textContent = 'Verificar ID →'; btn.disabled = false; }
   if (!rep) { toast('❌ ID no encontrado. No estás registrado en este local.','warn'); return; }
   if (rep.activo === false) { toast('❌ Repartidor inactivo. Contactá al local.','warn'); return; }
+
+  // Rider JWT — fase 1: guardar el token si el servidor lo mandó (lo manda
+  // /verificar). Si vino por el camino de db local (ya cargado por WS) puede
+  // que no haya token nuevavía — se pide aparte, sin bloquear el login.
+  if (repTokenTemp) {
+    sessionStorage.setItem('authToken', repTokenTemp);
+  } else {
+    fetch(getApiBase() + '/api/repartidores/' + idIngresado + '/verificar')
+      .then(r => r.json()).then(d => { if (d.ok && d.token) sessionStorage.setItem('authToken', d.token); })
+      .catch(()=>{});
+  }
 
   repTemp = rep;
   document.getElementById('repVerifNombre').textContent = '👤 ' + rep.nombre;
@@ -3663,7 +3682,14 @@ function renderPedidos() {
     const tlbls = ESTADOS.map((e,i) => `<span class="tlbl ${i<ei?'done':i===ei?'cur':''}">${['Recib.','Cocina','Camino','Listo'][i]}</span>`).join('');
     const sig = ESTADOS[ei+1];
     const sigL = {preparando:'🍳 Pasar a cocina',camino:'🛵 Despachar al rider',entregado:'✅ Marcar entregado'}[sig]||'';
-    const sigAction = sig === 'camino'
+    // BUGFIX: acá antes se decidía la ACCIÓN del botón mirando solo el
+    // estado siguiente (sig==='camino' → listoParaRepartidor, que abre el
+    // modal de asignar rider) sin fijarse nunca si el pedido era de mesa o
+    // delivery. El TEXTO del botón sí distinguía mesa ("Listo para mesa",
+    // más abajo) pero la acción real no — resultado: pedidos de consumo en
+    // el local disparaban el modal de "Asignar Repartidor", que no tiene
+    // ningún sentido para un pedido que nunca sale del local.
+    const sigAction = (sig === 'camino' && p.tipoPedido !== 'mesa')
       ? `listoParaRepartidor(${p.id})`
       : `avanzar(${p.id})`;
     // Bloque especial para pedidos esperando verificación de pago
@@ -3746,11 +3772,15 @@ function renderCocina() {
           ${p.paquetes.otros>0?`<span>📦 ${p.paquetes.otros} bulto${p.paquetes.otros>1?'s':''}</span>`:''}
         </div>
       </div>`:''}
+      ${p.tipoPedido!=='mesa' ? `
       <div style="margin-bottom:10px;padding:8px 10px;background:var(--ink3);border-radius:8px;display:flex;align-items:center;justify-content:space-between">
         <div style="font-size:12px;color:${p.repNombre?'var(--teal)':'var(--amber)'}">
           ${p.repNombre?'🛵 '+p.repNombre:'⚠️ Sin repartidor — caja asignará'}
         </div>
-      </div>
+      </div>` : `
+      <div style="margin-bottom:10px;padding:8px 10px;background:var(--ink3);border-radius:8px;display:flex;align-items:center;justify-content:space-between">
+        <div style="font-size:12px;color:var(--sky)">🍽️ ${p.dir||'Consumo en el local'}</div>
+      </div>`}
       <div class="btns">
         ${p.estado==='pendiente'?`<button class="btn btn-teal" onclick="avanzar(${p.id})">🍳 Empezar preparación</button>`:''}
         ${p.estado==='preparando'?`<button class="btn btn-amber" onclick="marcarListoCocina(${p.id})">✅ Pedido listo — avisar a caja</button>`:''}
