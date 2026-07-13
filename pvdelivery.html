@@ -829,6 +829,32 @@ select option { background: var(--ink3); }
 </div>
 
 <!-- ══════════════════════════════════════════
+     SELFIE CLIENTE (verificación al ingresar)
+     NOTA: por ahora esto es igual de "placeholder" que la verificación del
+     rider — se toma la foto y el cliente confirma con un botón, sin ningún
+     matching automático. Sirve para que caja/rider tengan una referencia
+     visual del cliente al momento de la entrega. El reemplazo por matching
+     real (comparación automática de rostro) es una feature aparte, no un
+     ajuste de este alcance — necesita un servicio externo de reconocimiento
+     facial (AWS Rekognition / Azure Face / similar).
+     ══════════════════════════════════════════ -->
+<div class="modal" id="modalSelfieCliente" style="z-index:9500">
+  <div class="modal-box" style="max-width:340px;text-align:center">
+    <div class="modal-handle"></div>
+    <div class="modal-title">📸 Una selfie antes de empezar</div>
+    <div class="modal-sub" style="margin-bottom:14px">Para que caja y el rider te reconozcan al entregar tu pedido</div>
+    <div style="text-align:center;margin-bottom:14px">
+      <div id="cliSelfiePreview" style="width:96px;height:96px;border-radius:50%;background:var(--ink3);border:2px dashed var(--line);overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto">📷</div>
+    </div>
+    <video id="cliCamera" style="width:100%;max-width:260px;border-radius:12px;margin:0 auto 10px;display:none" autoplay playsinline muted></video>
+    <canvas id="cliCanvas" style="display:none"></canvas>
+    <button id="cliBtnSelfie" class="btn btn-outline" style="margin-bottom:8px" onclick="abrirCamaraCli()">📸 Tomar selfie</button>
+    <button id="cliBtnConfirmar" class="btn btn-teal" style="display:none;margin-bottom:8px" onclick="confirmarSelfieCliente()">✅ Listo, continuar</button>
+    <button class="btn btn-ghost" onclick="omitirSelfieCliente()" style="font-size:12px">Omitir por ahora</button>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
      REP LOGIN
      ══════════════════════════════════════════ -->
 <div id="repLogin">
@@ -2139,6 +2165,93 @@ const EB = { pendiente:'b-pend', preparando:'b-prep', camino:'b-cam', entregado:
 const ELIC = { pendiente:'⏳', preparando:'🍳', camino:'🛵', entregado:'✅', cancelado:'❌', esperando_pago:'💳' };
 const STCOL = ['st0','st1','st2','st3'];
 
+let cliCameraStream = null;
+let cliSelfieDataUrl = null;
+
+function mostrarSelfieCliente() {
+  // Ya la tiene tomada de una sesión anterior en este dispositivo — no pedirla de nuevo
+  if (localStorage.getItem('cli_selfie_ok') === '1') { entrarClienteReal(); return; }
+  document.getElementById('modalSelfieCliente').classList.add('open');
+}
+
+async function abrirCamaraCli() {
+  const btn = document.getElementById('cliBtnSelfie');
+  if (btn) { btn.textContent = '⏳ Abriendo cámara...'; btn.disabled = true; }
+  try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('no_support');
+    let stream = null;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width:{ideal:640}, height:{ideal:480} }, audio: false });
+    } catch(e1) {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    }
+    cliCameraStream = stream;
+    const vid = document.getElementById('cliCamera');
+    vid.srcObject = stream;
+    vid.style.display = 'block';
+    await vid.play().catch(()=>{});
+    if (btn) { btn.textContent = '📸 Capturar foto'; btn.disabled = false; btn.onclick = tomarSelfieCli; }
+  } catch(e) {
+    if (btn) { btn.textContent = '📸 Tomar selfie'; btn.disabled = false; btn.onclick = abrirCamaraCli; }
+    toast('📷 No se pudo acceder a la cámara — podés omitir este paso por ahora','warn');
+  }
+}
+
+function tomarSelfieCli() {
+  const vid = document.getElementById('cliCamera');
+  if (cliCameraStream && vid.readyState >= 2) {
+    const canvas = document.getElementById('cliCanvas');
+    canvas.width = vid.videoWidth||320; canvas.height = vid.videoHeight||240;
+    canvas.getContext('2d').drawImage(vid,0,0);
+    cliSelfieDataUrl = canvas.toDataURL('image/jpeg',0.7);
+    const prev = document.getElementById('cliSelfiePreview');
+    prev.innerHTML = `<img src="${cliSelfieDataUrl}" style="width:100%;height:100%;object-fit:cover;border-radius:50%">`;
+    if (cliCameraStream) { cliCameraStream.getTracks().forEach(t=>t.stop()); cliCameraStream=null; }
+    vid.style.display = 'none';
+    const btnSelfie = document.getElementById('cliBtnSelfie');
+    if (btnSelfie) btnSelfie.textContent = '🔄 Volver a tomar';
+    document.getElementById('cliBtnConfirmar').style.display = 'block';
+  } else {
+    abrirCamaraCli();
+  }
+}
+
+function confirmarSelfieCliente() {
+  if (!cliSelfieDataUrl) { toast('Tomá una selfie primero','warn'); return; }
+  localStorage.setItem('cli_selfie', cliSelfieDataUrl);
+  localStorage.setItem('cli_selfie_ok', '1');
+  document.getElementById('modalSelfieCliente').classList.remove('open');
+  entrarClienteReal();
+}
+
+function omitirSelfieCliente() {
+  // No se bloquea el testeo por esto — el cliente puede seguir sin selfie.
+  document.getElementById('modalSelfieCliente').classList.remove('open');
+  entrarClienteReal();
+}
+
+// ── PWA: instalación forzada en los enlaces directos de rider/cliente ──
+// beforeinstallprompt solo existe en Chrome/Android — en iOS Safari no hay
+// API para esto, así que ahí se muestra un cartel con instrucciones manuales
+// (no hay forma de "instalar solo" en iOS, es una limitación del sistema
+// operativo, no del código).
+function intentarInstalarPWA() {
+  const esIOS = /iphone|ipad|ipod/i.test(navigator.userAgent) && !window.MSStream;
+  const yaInstalada = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+  if (yaInstalada) return;
+  if (esIOS) {
+    toast('📲 Instalá esta app: tocá Compartir → "Agregar a inicio"', 'info');
+    return;
+  }
+  if (deferredPWA) {
+    instalarPWA();
+  } else {
+    // El evento beforeinstallprompt puede no haber disparado todavía —
+    // reintentar una vez más tras un segundo.
+    setTimeout(() => { if (deferredPWA) instalarPWA(); }, 1500);
+  }
+}
+
 // ── PWA ─────────────────────────────────────────────────
 window.addEventListener('beforeinstallprompt', e => {
   e.preventDefault(); deferredPWA = e;
@@ -2207,6 +2320,7 @@ window.addEventListener('load', () => {
         rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-cli,.rs-card.tipo-admin').forEach(el=>el.style.display='none');
         const repCard = document.getElementById('rsCardRep'); if(repCard) repCard.style.display='flex';
         const h1=rs.querySelector('.rs-brand h1'); if(h1) h1.innerHTML='🛵 Acceso <span>Repartidor</span>';
+        intentarInstalarPWA();
         setTimeout(()=>mostrarLoginRep(),50);
         return;
       }
@@ -2216,6 +2330,7 @@ window.addEventListener('load', () => {
         rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-rep,.rs-card.tipo-admin').forEach(el=>el.style.display='none');
         const cliCard = document.getElementById('rsCardCli'); if(cliCard) cliCard.style.display='flex';
         const h1=rs.querySelector('.rs-brand h1'); if(h1) h1.innerHTML='🛍️ <span>Hacer mi pedido</span>';
+        intentarInstalarPWA();
         conectarWS();
         setTimeout(()=>entrarCliente(),800);
         return;
@@ -3025,6 +3140,13 @@ function tomarSelfie() {
 }
 
 function confirmarSelfie() {
+  // TODO (pendiente, a propósito — no implementar sin hablarlo primero):
+  // esto es verificación VISUAL manual, no un matching real de rostro. El
+  // repartidor mira su selfie al lado de la foto registrada y confirma él
+  // mismo que es la misma persona. Cuando el resto del sistema esté asentado
+  // en producción, esto debería reemplazarse por comparación automática real
+  // contra un servicio de reconocimiento facial (AWS Rekognition, Azure Face,
+  // o similar) — no es un cambio de una línea, es una integración nueva.
   if (!repSelfieTaken) { toast('Tomá una selfie primero','warn'); return; }
   miRepNom = repTemp.nombre; miRepId = repTemp.id;
   localStorage.setItem('rep_nombre', repTemp.nombre);
@@ -5829,6 +5951,10 @@ async function entrarCliente() {
       <button class="btn btn-ghost" onclick="location.reload()" style="width:auto;padding:10px 24px">← Volver</button>`;
     return;
   }
+  // Pedir selfie una sola vez por dispositivo antes de dejar entrar.
+  mostrarSelfieCliente();
+}
+async function entrarClienteReal() {
   // Ocultar pantalla de cerrado si existía
   const cerradoDiv = document.getElementById('cliLocalCerrado');
   if (cerradoDiv) cerradoDiv.style.display = 'none';
