@@ -53,7 +53,7 @@ const WebSocket = require('ws');
 const path      = require('path');
 const crypto    = require('crypto');
 const webpush   = require('web-push');
-const { hashPin, verificarPin, firmarToken, requireAuth, loginLimiter, apiLimiter } = require('./auth');
+const { hashPin, verificarPin, firmarToken, verificarToken, requireAuth, loginLimiter, apiLimiter } = require('./auth');
 
 // ── PUSH NOTIFICATIONS (Web Push / VAPID) ────────────────────
 // Claves por defecto incluidas para que funcione sin configuración extra —
@@ -524,6 +524,24 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
       p = ram.pedidos.find(x => x.id === id);
       if (!p) return r.status(404).json({ error: 'No encontrado' });
     }
+    // BUGFIX (seguridad): "cancelado" antes solo se bloqueaba del lado del
+    // cliente (JS), con un simple "if" que cualquiera podía saltarse abriendo
+    // la consola del navegador y llamando a este endpoint directo — sin PIN,
+    // sin login, nada. En un sistema que maneja pagos reales, cancelar un
+    // pedido tiene que estar verificado en el servidor, no solo "ocultado"
+    // en la interfaz. NOTA: el resto de las transiciones (preparando, camino,
+    // entregado) siguen sin exigir token acá porque el repartidor (rol "rep")
+    // no tiene sesión con JWT en este sistema — exigírselo también rompería
+    // su flujo. Si en algún momento se quiere cerrar eso también, hay que
+    // primero darle al repartidor una sesión autenticada real.
+    if (estado === 'cancelado') {
+      const header = q.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+      const auth = token ? verificarToken(token) : null;
+      if (!auth || auth.rol !== 'admin') {
+        return r.status(403).json({ ok: false, error: 'Cancelar un pedido requiere autorización del gerente.' });
+      }
+    }
     // BUGFIX (seguridad): este endpoint no tiene auth porque el cliente lo usa
     // legítimamente para acciones sobre SU propio pedido (marcar "recibido",
     // cancelar). Pero eso significaba que cualquiera podía llamarlo también
@@ -736,7 +754,7 @@ app.post('/api/reset', requireAuth('admin'), async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/pedidos/:id', async (q, r) => {
+app.delete('/api/pedidos/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     if (useDB) {
@@ -751,7 +769,7 @@ app.delete('/api/pedidos/:id', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/repartidores', async (q, r) => {
+app.post('/api/repartidores', requireAuth('admin'), async (q, r) => {
   try {
     const { nombre, dni, tel, com, foto, vehiculo, alias } = q.body;
     let newId;
@@ -775,7 +793,7 @@ app.post('/api/repartidores', async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/repartidores/:id', async (q, r) => {
+app.delete('/api/repartidores/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     if (useDB) await pool.query('DELETE FROM repartidores WHERE id=$1', [id]);
@@ -785,7 +803,7 @@ app.delete('/api/repartidores/:id', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/repartidores/:id', async (q, r) => {
+app.put('/api/repartidores/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     const { nombre, dni, tel, com, foto, vehiculo, activo, alias } = q.body;
@@ -819,7 +837,7 @@ app.put('/api/repartidores/:id/ubicacion', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/productos', async (q, r) => {
+app.post('/api/productos', requireAuth('admin'), async (q, r) => {
   try {
     const { nombre, precio, categoria, descripcion, imagen } = q.body;
     const id = Date.now();
@@ -831,7 +849,7 @@ app.post('/api/productos', async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/productos/:id', async (q, r) => {
+app.put('/api/productos/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     const { nombre, precio, categoria, descripcion, imagen, agotado } = q.body;
@@ -848,7 +866,7 @@ app.put('/api/productos/:id', async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
-app.delete('/api/productos/:id', async (q, r) => {
+app.delete('/api/productos/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
     if (useDB) await pool.query('DELETE FROM productos WHERE id=$1', [id]);
@@ -926,7 +944,7 @@ app.get('/api/turno', async (q, r) => {
   });
 });
 
-app.post('/api/turno/abrir', async (q, r) => {
+app.post('/api/turno/abrir', requireAuth(), async (q, r) => {
   try {
     if (ram.turnoActivo) return r.json({ ok: false, error: 'Ya hay un turno activo' });
     const { usuario, efectivoInicial } = q.body;
@@ -940,7 +958,7 @@ app.post('/api/turno/abrir', async (q, r) => {
   } catch(e) { r.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/turno/cerrar', async (q, r) => {
+app.post('/api/turno/cerrar', requireAuth(), async (q, r) => {
   try {
     const turnoData = {
       apertura: ram.turnoApertura,
@@ -990,7 +1008,7 @@ app.get('/api/clientes', async (q, r) => {
 
 // ── PAGOS SIMULADOS ───────────────────────────────────────
 // Simula movimientos bancarios para transferencia/tarjeta
-app.post('/api/pagos/simular', async (q, r) => {
+app.post('/api/pagos/simular', requireAuth(), async (q, r) => {
   try {
     const { pedidoId, monto, metodo, concepto } = q.body;
     const id = Date.now();

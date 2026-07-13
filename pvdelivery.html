@@ -3582,6 +3582,7 @@ async function avanzar(id) {
 }
 async function cancelar(id) {
   const nivel = sessionStorage.getItem('local_nivel');
+  let tokenAdminTemporal = null;
   if (nivel !== 'admin' && rol !== 'admin_panel') {
     // BUGFIX: antes esto bloqueaba directo con un toast y mandaba al cajero
     // a "contactar al gerente" — sin ninguna forma de resolverlo ahí mismo.
@@ -3597,6 +3598,7 @@ async function cancelar(id) {
       });
       const data = await res.json();
       autorizado = !!(data.ok && data.rol === 'admin');
+      if (autorizado) tokenAdminTemporal = data.token;
     } catch(e) {}
     if (!autorizado) { toast('❌ PIN de gerente incorrecto — cancelación no autorizada','warn'); return; }
     toast('🔓 Autorizado por gerente','ok');
@@ -3605,7 +3607,21 @@ async function cancelar(id) {
   if (motivo === null) return;
   if (!motivo.trim()) { toast('⚠️ Debés ingresar un motivo de cancelación','warn'); return; }
   try {
-    await api('PUT',`/pedidos/${id}/estado`,{estado:'cancelado', motivoCancelacion: motivo, canceladoPor: db._usuario||'Admin'});
+    // BUGFIX (seguridad): el servidor ahora exige token de ADMIN específicamente
+    // para poner un pedido en 'cancelado' (antes solo se validaba en el cliente
+    // y era saltable por consola). Si quien cancela es un cajero autorizado por
+    // PIN del gerente, su sesión propia tiene token de cajero, no de admin — hay
+    // que mandar el token de admin recién obtenido, no el de sessionStorage.
+    if (tokenAdminTemporal) {
+      const res = await fetch(getApiBase() + '/api/pedidos/' + id + '/estado', {
+        method: 'PUT',
+        headers: { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + tokenAdminTemporal },
+        body: JSON.stringify({ estado:'cancelado', motivoCancelacion: motivo, canceladoPor: db._usuario||'Admin' })
+      });
+      if (!res.ok) { const d = await res.json().catch(()=>({})); toast(d.error || 'Error al cancelar','warn'); return; }
+    } else {
+      await api('PUT',`/pedidos/${id}/estado`,{estado:'cancelado', motivoCancelacion: motivo, canceladoPor: db._usuario||'Admin'});
+    }
     toast('Pedido cancelado — registrado en reporte','warn');
   } catch(e) {}
 }
