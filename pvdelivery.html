@@ -3147,6 +3147,18 @@ async function confirmarLoginLocal() {
   document.getElementById('appLocal').classList.add('show');
   const rolLabel = nivel === 'admin' ? 'Admin' : nivel === 'cocinero' ? 'Cocina' : 'Caja';
   document.getElementById('negNomHdr').textContent = (db.negocio||'Mi Negocio') + ' · ' + rolLabel;
+  // BUGFIX: db.negocio acá casi siempre todavía es el default 'Mi Negocio'
+  // porque el valor real llega recién por WebSocket (ESTADO_INICIAL), que es
+  // asíncrono y nada volvía a corregir este texto después — quedaba mal toda
+  // la sesión aunque el nombre real ya estuviera guardado en el servidor.
+  // Se pide /api/db directo (no depende del WS) para corregirlo enseguida.
+  fetch(getApiBase()+'/api/db').then(r=>r.json()).then(fresh => {
+    if (fresh && fresh.negocio) {
+      db = { ...db, ...fresh };
+      const hdr = document.getElementById('negNomHdr');
+      if (hdr) hdr.textContent = db.negocio + ' · ' + rolLabel;
+    }
+  }).catch(()=>{});
   conectarWS();
   // Cocinero solo ve cocina; cajero no ve Config
   const cocinaBotom = document.getElementById('bL-cocina');
@@ -3615,11 +3627,16 @@ function renderPedidos() {
       <div style="background:var(--amber-bg);border:2px solid var(--amber-bd);border-radius:10px;padding:14px;margin-bottom:10px">
         <div style="font-family:var(--mono);font-size:10px;color:var(--amber);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px">💳 VERIFICAR PAGO ANTES DE ENVIAR A COCINA</div>
         <div style="font-size:12px;color:var(--t2);margin-bottom:8px">Método: <strong>${p.mpago||'transferencia'}</strong> · Monto: <strong>$${p.total.toLocaleString()}</strong></div>
-        ${p.comprobante?`<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Comprobante enviado por el cliente:</div><img src="${p.comprobante}" style="max-width:100%;max-height:220px;border-radius:8px;border:1px solid var(--amber-bd);cursor:pointer" onclick="window.open('${p.comprobante}','_blank')"></div>`:'<div style="font-size:12px;color:var(--rose);margin-bottom:8px">⚠️ Sin comprobante adjunto</div>'}
+        ${p.comprobante?`<div style="margin-bottom:10px"><div style="font-size:11px;color:var(--t3);margin-bottom:4px">Comprobante enviado por el cliente:</div><img src="${p.comprobante}" style="max-width:100%;max-height:220px;border-radius:8px;border:1px solid var(--amber-bd);cursor:pointer" onclick="window.open('${p.comprobante}','_blank')"></div>`:(p.mpago!=='tarjeta'?'<div style="font-size:12px;color:var(--rose);margin-bottom:8px">⚠️ Sin comprobante adjunto</div>':'')}
+        ${p.mpago==='tarjeta' ? `
+        <div style="font-size:12px;color:var(--t3);margin-bottom:10px">🔒 Pago online — se confirma solo cuando Mercado Pago lo aprueba. No hay botón manual porque no hay nada que un cajero pueda verificar a ojo acá; si el cliente no llegó a completar el pago, cancelá el pedido.</div>
+        <div style="display:flex;gap:8px">
+          <button onclick="rechazarPagoCajero(${p.id})" style="flex:1;background:var(--rose-bg);color:var(--rose);border:1px solid var(--rose-bd);border-radius:8px;padding:10px;font-weight:700;font-size:13px;cursor:pointer;font-family:var(--sans)">✕ Cancelar pedido</button>
+        </div>` : `
         <div style="display:flex;gap:8px">
           <button onclick="confirmarPagoCajero(${p.id})" style="flex:2;background:var(--teal);color:var(--ink);border:none;border-radius:8px;padding:10px;font-weight:700;font-size:13px;cursor:pointer;font-family:var(--sans)">✅ Pago verificado → Enviar a cocina</button>
           <button onclick="rechazarPagoCajero(${p.id})" style="flex:1;background:var(--rose-bg);color:var(--rose);border:1px solid var(--rose-bd);border-radius:8px;padding:10px;font-weight:700;font-size:13px;cursor:pointer;font-family:var(--sans)">✕ Rechazar</button>
-        </div>
+        </div>`}
       </div>` : '';
     return `<div class="pcard st-${p.estado==='esperando_pago'?'pendiente':p.estado}${p.estado==='cancelado'?' st-cancelado':''}">
       <div class="pchead">
@@ -5710,6 +5727,14 @@ async function entrarCliente() {
   document.getElementById('cliNegNom').textContent = negNom;
   const regNeg = document.getElementById('cliRegNegNom');
   if (regNeg) regNeg.textContent = negNom;
+  // BUGFIX: mismo problema que en entrarLocal() — no esperar al WS para
+  // tener el nombre real, pedirlo directo por REST.
+  fetch(getApiBase()+'/api/db').then(r=>r.json()).then(fresh => {
+    if (fresh && fresh.negocio) {
+      db = { ...db, ...fresh };
+      actualizarNombreNegocioCli();
+    }
+  }).catch(()=>{});
   conectarWS();
   const cliId = localStorage.getItem('cli_id');
   if (cliId) {
@@ -7367,11 +7392,23 @@ function actualizarPaquetesSummary() {
 }
 
 // Actualizar el renderAll para incluir admin
+// BUGFIX CRÍTICO: esto antes era "function renderAll(){...}" — un segundo
+// function declaration con el MISMO nombre que el de arriba (línea 4722).
+// Las function declarations se hoistean enteras al tope del scope antes de
+// ejecutar cualquier línea, y cuando hay dos con igual nombre, la última
+// declarada gana la referencia — ANTES de que corriera "const _origRenderAll
+// = renderAll". Entonces _origRenderAll terminaba apuntando a esta misma
+// función, y cada llamada a renderAll() se llamaba a sí misma sin parar
+// hasta "Maximum call stack size exceeded". Esto rompía el render en TODAS
+// las pantallas (Local/Cliente/Rider) cada vez que llegaba un mensaje por
+// WebSocket, que es la causa real de los cuelgues y fallas de sincronización.
+// Fix: usar asignación simple (no "function renderAll(){}") para que no
+// vuelva a hoistearse por encima de la declaración original.
 const _origRenderAll = renderAll;
-function renderAll() {
+renderAll = function() {
   _origRenderAll();
   if (rol === 'admin_panel') renderAdminAll();
-}
+};
 
 // Hook para que cuando llegan datos actualizados, el admin también se refresque
 const _origHandle = window.handle;
