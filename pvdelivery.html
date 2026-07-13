@@ -794,7 +794,7 @@ select option { background: var(--ink3); }
       </div>
       <div class="rs-card-arrow">›</div>
     </div>
-    <div class="rs-card" style="border-color:var(--violet-bd)" onclick="mostrarLoginAdmin()">
+    <div class="rs-card tipo-admin" style="border-color:var(--violet-bd)" onclick="mostrarLoginAdmin()">
       <div class="rs-card-icon">🔐</div>
       <div>
         <div class="rs-card-label" style="color:var(--violet)">Administrador</div>
@@ -2204,7 +2204,7 @@ window.addEventListener('load', () => {
         // Enlace directo rider — solo muestra acceso rider, oculta caja y cliente
         const rs = document.getElementById('roleScreen');
         rs.classList.add('show');
-        rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-cli').forEach(el=>el.style.display='none');
+        rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-cli,.rs-card.tipo-admin').forEach(el=>el.style.display='none');
         const repCard = document.getElementById('rsCardRep'); if(repCard) repCard.style.display='flex';
         const h1=rs.querySelector('.rs-brand h1'); if(h1) h1.innerHTML='🛵 Acceso <span>Repartidor</span>';
         setTimeout(()=>mostrarLoginRep(),50);
@@ -2213,7 +2213,7 @@ window.addEventListener('load', () => {
       if (rolParam === 'cliente' || rolParam === 'pedido') {
         // Enlace directo cliente — solo muestra acceso cliente, oculta caja y rider
         const rs = document.getElementById('roleScreen');
-        rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-rep').forEach(el=>el.style.display='none');
+        rs.querySelectorAll('.rs-card.tipo-local,.rs-card.tipo-rep,.rs-card.tipo-admin').forEach(el=>el.style.display='none');
         const cliCard = document.getElementById('rsCardCli'); if(cliCard) cliCard.style.display='flex';
         const h1=rs.querySelector('.rs-brand h1'); if(h1) h1.innerHTML='🛍️ <span>Hacer mi pedido</span>';
         conectarWS();
@@ -3210,16 +3210,23 @@ async function confirmarLoginLocal() {
       try {
         const monto = prompt(`💼 Apertura de caja — ${nombreFinal}\n\n¿Con cuánto efectivo abrís la caja? (escribí 0 si no hay fondo)`, '0');
         if (monto === null) return; // canceló el prompt — igual puede trabajar
-        await fetch(getApiBase() + '/api/turno/abrir', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ usuario: nombreFinal, efectivoInicial: parseFloat(monto) || 0 })
-        });
+        // BUGFIX: esto usaba fetch() crudo, sin mandar el token de sesión.
+        // Al protegerse /turno/abrir con requireAuth(), el servidor empezó a
+        // rechazar esta llamada con 401 — pero fetch() no tira error en
+        // respuestas no-ok, así que el catch de abajo nunca se disparaba y
+        // el cliente mostraba "turno abierto" igual, mientras el servidor
+        // NUNCA lo abría de verdad. Resultado: caja creía tener el local
+        // abierto, pero cliente y rider seguían viendo "local cerrado"
+        // porque el turno real (server-side) nunca se activó.
+        const res = await api('POST', '/turno/abrir', { usuario: nombreFinal, efectivoInicial: parseFloat(monto) || 0 });
+        if (!res || res.ok === false) {
+          toast('❌ No se pudo abrir el turno — ' + (res?.error || 'reintentá'), 'warn');
+          return;
+        }
         db.turnoActivo = true;
         toast('🟢 Turno abierto — pedidos habilitados para riders y clientes', 'ok');
       } catch(e) {
-        db.turnoActivo = true; // optimistic local
-        toast('🟢 Turno abierto localmente', 'info');
+        toast('❌ No se pudo abrir el turno — sin conexión, reintentá', 'warn');
       }
     }, 500);
   }
@@ -3374,7 +3381,8 @@ async function guardarEditRep() {
   const activo = document.getElementById('editRepActivo')?.value === '1';
   if (!nombre) { toast('El nombre es obligatorio','warn'); return; }
   try {
-    await api('PUT', `/repartidores/${id}`, { nombre, dni, tel, com, vehiculo, activo });
+    const res = await api('PUT', `/repartidores/${id}`, { nombre, dni, tel, com, vehiculo, activo });
+    if (!res) { toast('❌ No se pudo actualizar — puede que necesites sesión de administrador','warn'); return; }
     cerrarEditRep();
     toast('✅ Repartidor actualizado','ok');
   } catch(e) { toast('Error al guardar','warn'); }
@@ -3410,10 +3418,12 @@ function cerrarJornadaLocal() {
   guardarResumenDia();
   imprimirResumenDiaCierre();
   // Cerrar turno en el servidor
-  fetch(getApiBase() + '/api/turno/cerrar', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-    .then(r => r.json())
-    .then(data => { if (data.ok) { db.turnoActivo = false; console.log('[TURNO] Cerrado en servidor'); } })
-    .catch(() => { db.turnoActivo = false; });
+  // BUGFIX: mismo problema que en abrirTurno — sin token, requireAuth()
+  // rechazaba esto con 401 en silencio.
+  api('POST', '/turno/cerrar', {})
+    .then(data => { if (data && data.ok) { db.turnoActivo = false; console.log('[TURNO] Cerrado en servidor'); }
+                     else console.warn('[TURNO] No se pudo cerrar en el servidor:', data); })
+    .catch(() => {});
   rol = null;
   sessionStorage.removeItem('local_auth');
   sessionStorage.removeItem('local_nivel');
@@ -3653,7 +3663,8 @@ async function borrarPedido(id) {
   }
   if (!confirm(`¿Eliminar permanentemente el pedido #${String(id).padStart(4,'0')}? Esta acción no se puede deshacer.`)) return;
   try {
-    await api('DELETE', `/pedidos/${id}`);
+    const res = await api('DELETE', `/pedidos/${id}`);
+    if (!res) { toast('❌ No se pudo eliminar — revisá tu sesión','warn'); return; }
     toast('🗑️ Pedido eliminado del sistema','ok');
   } catch(e) { toast('Error al eliminar pedido','warn'); }
 }
@@ -3975,7 +3986,8 @@ async function addProd() {
       r.readAsDataURL(imgInp.files[0]);
     });
   }
-  await api('POST','/productos',{nombre:n,precio:p,categoria:c,descripcion:desc,imagen:imgData||null});
+  const res = await api('POST','/productos',{nombre:n,precio:p,categoria:c,descripcion:desc,imagen:imgData||null});
+  if (!res) { toast('❌ No se pudo agregar — puede que necesites sesión de administrador','warn'); return; }
   ['pNom','pPre'].forEach(id => document.getElementById(id).value='');
   document.getElementById('prodImgPreview').innerHTML='🍴';
   document.getElementById('prodImgPreview').style.backgroundImage='';
@@ -4181,9 +4193,16 @@ async function addRep() {
     idEl.style.display='block';
     toast('✅ Repartidor registrado — ID: '+res.rep.id,'ok');
     setTimeout(()=>{ idEl.style.display='none'; },15000);
+  } else {
+    toast('❌ No se pudo registrar — puede que necesites sesión de administrador','warn');
   }
 }
-async function delRep(id) { if(!confirm('¿Eliminar repartidor?'))return; await api('DELETE',`/repartidores/${id}`); }
+async function delRep(id) {
+  if(!confirm('¿Eliminar repartidor?'))return;
+  const res = await api('DELETE',`/repartidores/${id}`);
+  if (!res) { toast('❌ No se pudo eliminar — puede que necesites sesión de administrador','warn'); return; }
+  toast('Repartidor eliminado','ok');
+}
 function esAdmin() {
   return sessionStorage.getItem('local_nivel') === 'admin';
 }
@@ -7236,7 +7255,8 @@ async function addRiderAdmin() {
 
 async function delRiderAdmin(id) {
   if (!confirm('¿Eliminar rider?')) return;
-  await api('DELETE',`/repartidores/${id}`);
+  const res = await api('DELETE',`/repartidores/${id}`);
+  if (!res) { toast('❌ No se pudo eliminar','warn'); return; }
   toast('Rider eliminado','warn');
 }
 
@@ -7267,14 +7287,17 @@ async function addProdAdmin() {
   const cat=document.getElementById('adminPCat').value;
   const desc=document.getElementById('adminPDesc').value.trim();
   if(!nom||!pre){ toast('Nombre y precio requeridos','warn'); return; }
-  await api('POST','/productos',{nombre:nom,precio:pre,categoria:cat,descripcion:desc});
+  const res = await api('POST','/productos',{nombre:nom,precio:pre,categoria:cat,descripcion:desc});
+  if (!res) { toast('❌ No se pudo agregar','warn'); return; }
   ['adminPNom','adminPPre','adminPDesc'].forEach(id=>{const el=document.getElementById(id);if(el)el.value='';});
   toast('✅ Producto agregado','ok');
 }
 
 async function delProdAdmin(id) {
   if(!confirm('¿Eliminar producto?')) return;
-  await api('DELETE',`/productos/${id}`);
+  const res = await api('DELETE',`/productos/${id}`);
+  if (!res) { toast('❌ No se pudo eliminar','warn'); return; }
+  toast('Producto eliminado','ok');
 }
 
 // ── IMPORTAR EXCEL ──────────────────────────────────────
