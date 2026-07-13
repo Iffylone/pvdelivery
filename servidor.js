@@ -535,32 +535,34 @@ app.put('/api/pedidos/:id/estado', async (q, r) => {
       p = ram.pedidos.find(x => x.id === id);
       if (!p) return r.status(404).json({ error: 'No encontrado' });
     }
-    // BUGFIX (seguridad): "cancelado" antes solo se bloqueaba del lado del
-    // cliente (JS), con un simple "if" que cualquiera podía saltarse abriendo
-    // la consola del navegador y llamando a este endpoint directo — sin PIN,
-    // sin login, nada. En un sistema que maneja pagos reales, cancelar un
-    // pedido tiene que estar verificado en el servidor, no solo "ocultado"
-    // en la interfaz. NOTA: el resto de las transiciones (preparando, camino,
-    // entregado) siguen sin exigir token acá porque el repartidor (rol "rep")
-    // no tiene sesión con JWT en este sistema — exigírselo también rompería
-    // su flujo. Si en algún momento se quiere cerrar eso también, hay que
-    // primero darle al repartidor una sesión autenticada real.
-    if (estado === 'cancelado') {
+    // BUGFIX (seguridad, corrige un choque entre dos fixes de la misma sesión):
+    // "cancelado" exige PIN de gerente/admin — PERO solo cuando el pedido ya
+    // estaba confirmado y en curso (en cocina, camino, etc). Si el pedido
+    // sigue en 'esperando_pago' (nunca se confirmó ningún pago), cancelarlo
+    // es una acción legítima del propio cliente sobre SU pedido — por
+    // ejemplo cuando Mercado Pago le rechaza la tarjeta. Ahí no hace falta
+    // ningún PIN: no hay nada confirmado que un gerente deba autorizar a
+    // deshacer. Sin esta distinción, un pago rechazado dejaba el pedido
+    // trabado para siempre, porque el cliente no tiene (ni debería tener)
+    // login de personal.
+    if (estado === 'cancelado' && p.estado !== 'esperando_pago') {
       const header = q.headers.authorization || '';
       const token = header.startsWith('Bearer ') ? header.slice(7) : null;
       const auth = token ? verificarToken(token) : null;
-      if (!auth || auth.rol !== 'admin') {
+      if (!auth || (auth.rol !== 'admin' && auth.rol !== 'gerente')) {
         return r.status(403).json({ ok: false, error: 'Cancelar un pedido requiere autorización del gerente.' });
       }
     }
     // BUGFIX (seguridad): este endpoint no tiene auth porque el cliente lo usa
     // legítimamente para acciones sobre SU propio pedido (marcar "recibido",
-    // cancelar). Pero eso significaba que cualquiera podía llamarlo también
-    // para sacar un pedido de 'esperando_pago' sin que un cajero lo verificara
-    // — la misma llamada que dispara el botón "Pago verificado". Ahora, ese
-    // salto específico queda prohibido acá y se fuerza a pasar por los
-    // endpoints protegidos /confirmar-pago y /rechazar-pago (requieren login).
-    if (p.estado === 'esperando_pago' && estado !== 'esperando_pago') {
+    // cancelar su propio pedido sin confirmar). Pero eso significaba que
+    // cualquiera podía llamarlo también para sacar un pedido de
+    // 'esperando_pago' hacia estados de COCINA sin que un cajero lo
+    // verificara — la misma llamada que dispara el botón "Pago verificado".
+    // Ese salto específico (esperando_pago → cualquier estado que NO sea
+    // cancelado) queda prohibido acá y se fuerza a pasar por los endpoints
+    // protegidos /confirmar-pago y /rechazar-pago (requieren login de personal).
+    if (p.estado === 'esperando_pago' && estado !== 'esperando_pago' && estado !== 'cancelado') {
       return r.status(403).json({ ok: false, error: 'Este pedido espera verificación de pago. Usá el botón de caja para confirmarlo o rechazarlo.' });
     }
     const repIdAntes = p.repId;

@@ -3364,7 +3364,12 @@ function editarRep(id) {
   document.getElementById('editRepNom').value = r.nombre || '';
   document.getElementById('editRepDni').value = r.dni || '';
   document.getElementById('editRepTel').value = r.tel || '';
-  document.getElementById('editRepCom').value = r.com || 0;
+  // BUGFIX: esta línea escribía en '#editRepCom', un input que ya no existe
+  // en el modal (la edición de comisión se movió a Config → Comisiones, pero
+  // esta línea quedó huérfana). document.getElementById() devolvía null, y
+  // ".value = ..." sobre null tiraba una excepción que cortaba la función
+  // ACÁ MISMO — antes de llegar a la línea que abre el modal. Por eso el
+  // botón "Editar" no hacía absolutamente nada, sin ningún error visible.
   const vEl = document.getElementById('editRepVehiculo');
   if (vEl) vEl.value = r.vehiculo || 'moto';
   const aEl = document.getElementById('editRepActivo');
@@ -3611,40 +3616,57 @@ async function avanzar(id) {
 }
 async function cancelar(id) {
   const nivel = sessionStorage.getItem('local_nivel');
-  let tokenAdminTemporal = null;
+  let tokenAutorizante = null;
   if (nivel !== 'admin' && rol !== 'admin_panel') {
     // BUGFIX: antes esto bloqueaba directo con un toast y mandaba al cajero
     // a "contactar al gerente" — sin ninguna forma de resolverlo ahí mismo.
     // La intención real es que el gerente autorice con SU PIN sin que el
-    // cajero tenga que cerrar sesión. Se verifica contra el mismo endpoint
-    // que ya usa el resto del sistema para validar PIN de admin.
-    const pin = prompt('Esta acción requiere autorización del gerente.\nIngresá el PIN de administrador:');
+    // cajero tenga que cerrar sesión.
+    const pin = prompt('Esta acción requiere autorización del gerente.\nIngresá el PIN de gerente (o de administrador):');
     if (pin === null) return;
     let autorizado = false;
+    let nombreAutorizante = 'Gerente';
+    // BUGFIX: esto solo probaba contra /api/auth/login — la clave MAESTRA
+    // del sistema (la que usa el desarrollador/dueño para entrar como
+    // "Admin"). Un gerente del local tiene su PIN cargado como EMPLEADO
+    // (rol 'gerente'), que se valida en /api/empleados/login, no acá. Eso
+    // obligaba a usar la clave del sistema para algo tan de todos los días
+    // como cancelar un pedido — no tiene sentido operativo. Ahora se prueba
+    // primero contra empleados (gerente) y, si no matchea, contra la clave
+    // maestra (admin), igual que hace el login de Caja con el mismo patrón.
     try {
-      const res = await fetch(getApiBase() + '/api/auth/login', {
+      const res1 = await fetch(getApiBase() + '/api/empleados/login', {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
       });
-      const data = await res.json();
-      autorizado = !!(data.ok && data.rol === 'admin');
-      if (autorizado) tokenAdminTemporal = data.token;
+      const data1 = await res1.json();
+      if (data1.ok && data1.empleado?.rol === 'gerente') {
+        autorizado = true; tokenAutorizante = data1.token; nombreAutorizante = data1.empleado.nombre || 'Gerente';
+      }
     } catch(e) {}
-    if (!autorizado) { toast('❌ PIN de gerente incorrecto — cancelación no autorizada','warn'); return; }
-    toast('🔓 Autorizado por gerente','ok');
+    if (!autorizado) {
+      try {
+        const res2 = await fetch(getApiBase() + '/api/auth/login', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
+        });
+        const data2 = await res2.json();
+        if (data2.ok && data2.rol === 'admin') { autorizado = true; tokenAutorizante = data2.token; nombreAutorizante = 'Admin'; }
+      } catch(e) {}
+    }
+    if (!autorizado) { toast('❌ PIN incorrecto — cancelación no autorizada','warn'); return; }
+    toast('🔓 Autorizado por ' + nombreAutorizante,'ok');
   }
   const motivo = prompt('Motivo de cancelación (requerido para el reporte):','');
   if (motivo === null) return;
   if (!motivo.trim()) { toast('⚠️ Debés ingresar un motivo de cancelación','warn'); return; }
   try {
-    // BUGFIX (seguridad): el servidor ahora exige token de ADMIN específicamente
-    // para poner un pedido en 'cancelado' (antes solo se validaba en el cliente
-    // y era saltable por consola). Si quien cancela es un cajero autorizado por
-    // PIN del gerente, su sesión propia tiene token de cajero, no de admin — hay
-    // que mandar el token de admin recién obtenido, no el de sessionStorage.
-    if (tokenAdminTemporal) {
+    // BUGFIX (seguridad): el servidor exige token de gerente o admin
+    // específicamente para poner un pedido en 'cancelado'. Si quien cancela
+    // es un cajero autorizado por PIN, su sesión propia tiene token de
+    // cajero — hay que mandar el token recién obtenido, no el de sessionStorage.
+    if (tokenAutorizante) {
       const res = await fetch(getApiBase() + '/api/pedidos/' + id + '/estado', {
         method: 'PUT',
-        headers: { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + tokenAdminTemporal },
+        headers: { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + tokenAutorizante },
         body: JSON.stringify({ estado:'cancelado', motivoCancelacion: motivo, canceladoPor: db._usuario||'Admin' })
       });
       if (!res.ok) { const d = await res.json().catch(()=>({})); toast(d.error || 'Error al cancelar','warn'); return; }
