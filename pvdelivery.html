@@ -3057,13 +3057,15 @@ function mostrarLoginLocal() {
   // Si ya está autenticado en esta sesión, entra directo
   if (sessionStorage.getItem('local_auth') === '1') { entrarLocal(); return; }
   document.getElementById('localClaveInput').value = '';
-  document.getElementById('localClaveError').style.display = 'none';
+  const errEl = document.getElementById('localClaveError');
+  errEl.textContent = '❌ Clave incorrecta. Intentá de nuevo.';
+  errEl.style.display = 'none';
   document.getElementById('modalLoginLocal').classList.add('open');
   setTimeout(() => document.getElementById('localClaveInput').focus(), 100);
 }
 async function confirmarLoginLocal() {
   const clave = document.getElementById('localClaveInput').value;
-  let nivel = null, nombreFinal = '', tokenObtenido = null;
+  let nivel = null, nombreFinal = '', tokenObtenido = null, errorServidor = null;
   sessionStorage.removeItem('empleadoId');
 
   // 1. Verificar contra el PIN de local (operador/admin) — validación server-side
@@ -3079,6 +3081,13 @@ async function confirmarLoginLocal() {
         nivel = data.rol === 'admin' ? 'admin' : 'cajero';
         nombreFinal = nivel === 'admin' ? 'Gerente' : 'Cajero';
         tokenObtenido = data.token;
+      } else if (data.error) {
+        // BUGFIX: antes se ignoraba data.error y siempre se mostraba
+        // "Clave incorrecta" — incluso cuando el motivo real era el rate
+        // limiter (5 intentos/15min, ver auth.js) bloqueando temporalmente.
+        // Con el PIN correcto, esto hacía imposible entrar durante 15
+        // minutos sin ninguna pista de qué estaba pasando.
+        errorServidor = data.error;
       }
     } catch(e) { /* sin conexión, seguimos a intentar PIN de empleado */ }
   }
@@ -3114,6 +3123,8 @@ async function confirmarLoginLocal() {
           document.body.appendChild(fotoDiv);
           setTimeout(() => { try { document.body.removeChild(fotoDiv); } catch(e){} }, 2000);
         }
+      } else if (data.error && !errorServidor) {
+        errorServidor = data.error;
       }
     } catch(e) {
       // Sin conexión: no se puede autenticar
@@ -3121,7 +3132,9 @@ async function confirmarLoginLocal() {
   }
 
   if (!nivel) {
-    document.getElementById('localClaveError').style.display = 'block';
+    const errEl = document.getElementById('localClaveError');
+    errEl.textContent = errorServidor ? '❌ ' + errorServidor : '❌ Clave incorrecta. Intentá de nuevo.';
+    errEl.style.display = 'block';
     return;
   }
   if (tokenObtenido) sessionStorage.setItem('authToken', tokenObtenido);
@@ -3570,8 +3583,23 @@ async function avanzar(id) {
 async function cancelar(id) {
   const nivel = sessionStorage.getItem('local_nivel');
   if (nivel !== 'admin' && rol !== 'admin_panel') {
-    toast('⛔ Solo el administrador puede cancelar pedidos. Contactá al gerente.','warn');
-    return;
+    // BUGFIX: antes esto bloqueaba directo con un toast y mandaba al cajero
+    // a "contactar al gerente" — sin ninguna forma de resolverlo ahí mismo.
+    // La intención real es que el gerente autorice con SU PIN sin que el
+    // cajero tenga que cerrar sesión. Se verifica contra el mismo endpoint
+    // que ya usa el resto del sistema para validar PIN de admin.
+    const pin = prompt('Esta acción requiere autorización del gerente.\nIngresá el PIN de administrador:');
+    if (pin === null) return;
+    let autorizado = false;
+    try {
+      const res = await fetch(getApiBase() + '/api/auth/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
+      });
+      const data = await res.json();
+      autorizado = !!(data.ok && data.rol === 'admin');
+    } catch(e) {}
+    if (!autorizado) { toast('❌ PIN de gerente incorrecto — cancelación no autorizada','warn'); return; }
+    toast('🔓 Autorizado por gerente','ok');
   }
   const motivo = prompt('Motivo de cancelación (requerido para el reporte):','');
   if (motivo === null) return;
@@ -6809,7 +6837,7 @@ function cerrarLoginAdmin() {
 
 async function confirmarLoginAdmin() {
   const clave = document.getElementById('adminClaveInput').value;
-  let ok = false;
+  let ok = false, errorServidor = null;
   try {
     const res = await fetch(getApiBase() + '/api/auth/login', {
       method: 'POST',
@@ -6818,9 +6846,17 @@ async function confirmarLoginAdmin() {
     });
     const data = await res.json();
     if (data.ok && data.rol === 'admin') { ok = true; sessionStorage.setItem('authToken', data.token); }
+    else if (data.error) {
+      // BUGFIX: mismo problema que en confirmarLoginLocal — mostrar el
+      // motivo real (ej. rate limit de auth.js) en vez de "Clave incorrecta"
+      // siempre, que dejaba al admin sin ninguna pista durante un bloqueo.
+      errorServidor = data.error;
+    }
   } catch(e) { /* sin conexión */ }
   if (!ok) {
-    document.getElementById('adminClaveError').style.display = 'block';
+    const errEl = document.getElementById('adminClaveError');
+    errEl.textContent = errorServidor ? '❌ ' + errorServidor : '❌ Clave incorrecta.';
+    errEl.style.display = 'block';
     return;
   }
   document.getElementById('adminClaveError').style.display = 'none';
