@@ -9,7 +9,7 @@
 <meta name="apple-mobile-web-app-title" content="IffyWare fasT">
 <meta name="description" content="Iffyware Systems Systems — Sistema profesional de gestión de pedidos">
 <link rel="manifest" id="pwa-manifest" href="/manifest.json">
-<title>Iffyware Systems Systems</title>
+<title>Iffyware Systems</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://sdk.mercadopago.com/js/v2"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -80,9 +80,14 @@ body {
   min-height: 100%; font-size: 14px; line-height: 1.6; overflow-x: hidden;
 }
 /* En mobile instalado como PWA: fullscreen */
+/* En mobile instalado como PWA: fullscreen, PERO con scroll normal (no el
+   truco de flex:1/height:0 que se rompía si algún contenedor intermedio del
+   panel de admin no era 100% flex — el contenido quedaba ahí, recortado sin
+   forma de verlo, adentro de un overflow:hidden). Mismo comportamiento que
+   ya funciona bien en el navegador (ver el media query de abajo). */
 @media (display-mode: standalone) {
-  body { position: fixed; inset: 0; overflow: hidden; }
-  #appLocal, #appRep, #appCliente { position: fixed; inset: 0; overflow: hidden; display: none; flex-direction: column; align-items: center; }
+  body { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+  #appLocal, #appRep, #appCliente { min-height: 100vh; display: none; flex-direction: column; align-items: center; }
   #appLocal.show, #appRep.show, #appCliente.show { display: flex; }
   #appLocal > *, #appRep > *, #appCliente > * { width: 100%; max-width: 560px; }
 }
@@ -296,10 +301,12 @@ body {
    ═══════════════════════════════════════════════ */
 .pg { display: none; padding: 16px; animation: fadein .2s ease; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 .pg.on { display: block; }
-/* En standalone/PWA: los paneles ocupan el espacio restante y scrollean internamente */
-@media (display-mode: standalone) {
-  .pg.on { flex: 1; overflow-y: auto; height: 0; /* truco flex para que ocupe el espacio restante */ }
-}
+/* Ya no hace falta un tratamiento especial para standalone: .pg usa el
+   mismo overflow-y:auto de siempre y el scroll real lo maneja el body
+   (ver el media query de arriba). El truco de flex:1/height:0 se sacó
+   porque dependía de que TODOS los contenedores intermedios fueran flex,
+   y en el panel de Admin no lo eran — el contenido quedaba recortado sin
+   scroll visible en la app instalada, aunque en el navegador andaba bien. */
 @keyframes fadein { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 
 /* ═══════════════════════════════════════════════
