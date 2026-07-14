@@ -403,17 +403,66 @@ app.get('/ping', (q, r) => r.json({ ok: true, ts: Date.now(), uptime: process.up
 // ── PUSH NOTIFICATIONS: API pública ───────────────────────────
 app.get('/api/push/vapid-public-key', (q, r) => r.json({ publicKey: VAPID_PUBLIC }));
 
+// Existe el pedido con este id (RAM o DB). Se usa para validar ref='cliente'
+// sin exigir login (el cliente nunca inicia sesión — su "credencial" es
+// conocer el id de SU pedido, igual que cualquier link de tracking público).
+async function existePedido(id) {
+  if (!Number.isFinite(id)) return false;
+  if (useDB) {
+    const res = await pool.query('SELECT 1 FROM pedidos WHERE id=$1', [id]);
+    return res.rows.length > 0;
+  }
+  return ram.pedidos.some(x => x.id === id);
+}
+
+// BUGFIX SEGURIDAD: antes este endpoint aceptaba rol/ref del body sin
+// verificar que quien llama sea efectivamente ese rol/ref — cualquiera que
+// supiera (o adivinara) un repId o que quisiera suscribirse como 'local'
+// podía interceptar notificaciones ajenas (ubicación de pedidos, estado de
+// caja, etc.). Ahora cada rol exige su propia prueba de identidad:
+//   - 'local' (caja/admin del negocio): exige JWT válido de admin/operador.
+//   - 'rep' (repartidor): exige JWT válido cuyo repId coincida con el ref.
+//   - 'cliente': sin login (no existe), pero se valida que el pedido exista
+//     — no se guardan suscripciones para refs inventados.
 app.post('/api/push/subscribe', async (q, r) => {
   try {
     const { rol, ref, subscription } = q.body;
     if (!subscription?.endpoint || !['cliente','rep','local'].includes(rol)) {
       return r.status(400).json({ ok: false, error: 'Datos de suscripción inválidos' });
     }
+
+    if (rol === 'local') {
+      const header = q.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+      const auth = token ? verificarToken(token) : null;
+      if (!auth || !['admin', 'operador'].includes(auth.rol)) {
+        return r.status(401).json({ ok: false, error: 'Requiere sesión de local (admin/operador)' });
+      }
+    } else if (rol === 'rep') {
+      const header = q.headers.authorization || '';
+      const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+      const auth = token ? verificarToken(token) : null;
+      if (!auth || auth.rol !== 'rep' || Number(auth.repId) !== Number(ref)) {
+        return r.status(401).json({ ok: false, error: 'Token de repartidor inválido o no coincide con el ID' });
+      }
+    } else if (rol === 'cliente') {
+      const pedidoId = parseInt(ref);
+      if (!(await existePedido(pedidoId))) {
+        return r.status(404).json({ ok: false, error: 'Pedido no encontrado' });
+      }
+    }
+
     await guardarPushSub(rol, ref, subscription);
     r.json({ ok: true });
   } catch(e) { console.error(e); r.status(500).json({ ok: false, error: e.message }); }
 });
 
+// Unsubscribe queda sin token exigido a propósito: solo borra la fila cuyo
+// endpoint coincide EXACTO con el de esta suscripción del navegador — es
+// un identificador de alta entropía (URL única generada por el push service
+// del navegador), no algo adivinable ni enumerable. Exigir token acá
+// rompería el caso legítimo de "desactivar notificaciones" después de que
+// la sesión ya expiró.
 app.post('/api/push/unsubscribe', async (q, r) => {
   try {
     if (q.body.endpoint) await borrarPushSubPorEndpoint(q.body.endpoint);
