@@ -1670,6 +1670,32 @@ app.get('/logo-dev.jpg', (q, r) => {
   r.sendFile(encontrado);
 });
 
+// BUGFIX: mismo problema que logo-dev.jpg — manifest.json pide /icon-192.png
+// y /icon-512.png en la raíz, pero según el repo estos archivos viven en
+// /public/icons/. Sin poder bajarlos, Chrome no puede validar el manifest
+// y NUNCA dispara beforeinstallprompt — por eso el cartel de "instalar como
+// app" no aparecía nunca, ni en cliente ni en rider.
+function servirIconoConFallback(nombreArchivo) {
+  return (q, r) => {
+    const candidatos = [
+      path.join(__dirname, nombreArchivo),
+      path.join(__dirname, 'public', nombreArchivo),
+      path.join(__dirname, 'public', 'icons', nombreArchivo),
+      path.join(__dirname, 'electron', nombreArchivo),
+    ];
+    const encontrado = candidatos.find(c => fs.existsSync(c));
+    if (!encontrado) {
+      console.warn(`[ICON] ${nombreArchivo} no se encontró en ninguna de estas rutas:`, candidatos);
+      return r.status(404).send(`${nombreArchivo} no encontrado en el servidor (ver logs)`);
+    }
+    r.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    r.setHeader('Content-Type', 'image/png');
+    r.sendFile(encontrado);
+  };
+}
+app.get('/icon-192.png', servirIconoConFallback('icon-192.png'));
+app.get('/icon-512.png', servirIconoConFallback('icon-512.png'));
+
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: '1h' }));
 app.use(express.static(path.join(__dirname), { maxAge: '1h' }));
 
