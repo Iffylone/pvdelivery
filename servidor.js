@@ -1462,6 +1462,21 @@ app.delete('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
 });
 
 // POST /api/empleados/login — verifica PIN (hash bcrypt) y devuelve JWT + empleado.
+// BUGFIX (feature faltante): existía el campo turnoEntrada/turnoSalida por
+// empleado, pero nada lo usaba para restringir el login — cualquiera podía
+// entrar con su PIN a cualquier hora, tuviera turno asignado o no.
+// Ojo con el huso horario: Render corre el servidor en UTC, no en hora
+// argentina — hay que calcular la hora local de Argentina explícitamente,
+// no usar la hora del servidor directo.
+function horaActualArgentina() {
+  return new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'America/Argentina/Buenos_Aires' }).format(new Date());
+}
+function dentroDeTurno(entrada, salida, horaActual) {
+  if (!entrada || !salida) return true; // sin turno configurado = sin restricción
+  if (entrada <= salida) return horaActual >= entrada && horaActual <= salida;
+  return horaActual >= entrada || horaActual <= salida; // turno cruza medianoche (ej. 22:00–06:00)
+}
+
 app.post('/api/empleados/login', loginLimiter, async (q, r) => {
   try {
     const { pin } = q.body;
@@ -1480,6 +1495,14 @@ app.post('/api/empleados/login', loginLimiter, async (q, r) => {
       if (chk.ok) { encontrado = e; if (chk.necesitaRehash) e.pin = hashPin(pin); break; }
     }
     if (!encontrado) return r.json({ ok: false, error: 'PIN incorrecto o empleado inactivo' });
+    // Gerente/admin no se restringen por horario — necesitan poder entrar
+    // para autorizar cosas (ej. cancelaciones) fuera del turno normal.
+    if (encontrado.rol !== 'gerente' && encontrado.rol !== 'admin') {
+      const horaAct = horaActualArgentina();
+      if (!dentroDeTurno(encontrado.turnoEntrada, encontrado.turnoSalida, horaAct)) {
+        return r.json({ ok: false, error: `Fuera de tu horario de turno (${encontrado.turnoEntrada}–${encontrado.turnoSalida}). Hora actual: ${horaAct}.` });
+      }
+    }
     // Persistir el rehash si veníamos de un PIN viejo en texto plano
     if (useDB) await pool.query('UPDATE empleados SET data=$1 WHERE id=$2', [JSON.stringify(encontrado), encontrado.id]).catch(()=>{});
     const { pin: _omit, ...empSinPin } = encontrado;
