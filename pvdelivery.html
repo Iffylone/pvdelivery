@@ -1984,6 +1984,24 @@ select option { background: var(--ink3); }
 </div>
 
 <!-- MODAL EDITAR REPARTIDOR -->
+<div class="modal" id="modalHorarioSemanal" style="z-index:9200">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🕐 Horario semanal — <span id="horSemNombre"></span></div>
+    <div id="horSemAviso" style="font-size:11px;color:var(--t3);margin-bottom:10px">
+      Turnos de 4 a 8hs, dentro del horario del local según la estación, con al menos un día de descanso. Máximo legal: 48hs/semana.
+    </div>
+    <div id="horSemDias" style="display:flex;flex-direction:column;gap:6px;max-height:340px;overflow-y:auto"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:12px 0;font-size:13px">
+      <span style="color:var(--t3)">Total semanal</span>
+      <strong id="horSemTotal" style="color:var(--teal)">0 hs</strong>
+    </div>
+    <div id="horSemError" style="color:var(--rose);font-size:12px;margin-bottom:8px;display:none"></div>
+    <button class="btn btn-teal" onclick="guardarHorarioSemanal()">💾 Guardar horario</button>
+    <button class="btn btn-ghost" onclick="document.getElementById('modalHorarioSemanal').classList.remove('open')" style="margin-top:6px">Cancelar</button>
+  </div>
+</div>
+
 <div class="modal" id="modalEditRep" style="z-index:9000">
   <div class="modal-box" style="max-height:85vh;overflow-y:auto">
     <div class="modal-handle"></div>
@@ -2556,6 +2574,21 @@ function conectarWS(forzar) {
 }
 let _wsUltimoMensaje = Date.now();
 
+// BUGFIX: el único mecanismo que forzaba reconexión ante una conexión
+// "zombie" dependía de que la pestaña cambiara de visibilidad (se minimizara
+// y volviera a abrirse). Para Caja, que normalmente queda en una pantalla
+// siempre prendida y visible (un mostrador), ese evento nunca se dispara —
+// el único salvavidas quedaba en el ciclo del servidor, que podía tardar
+// hasta 30-60s. Este watchdog revisa cada 20s si pasó demasiado tiempo sin
+// recibir nada por WS y fuerza la reconexión sin esperar ningún evento de
+// visibilidad.
+setInterval(() => {
+  if (Date.now() - _wsUltimoMensaje > 90000) {
+    console.warn('[Watchdog] Sin mensajes del WS hace más de 90s — reconectando');
+    conectarWS(true);
+  }
+}, 20000);
+
 // ── Sonido de notificación ───────────────────────────────
 let tipoSonido = localStorage.getItem('tipo_sonido') || 'clasico';
 
@@ -2708,9 +2741,11 @@ function handle(msg) {
     }
   }
   if (msg.tipo === 'PEDIDO_ACTUALIZADO') {
+    let repIdAnterior = undefined;
     if (msg.pedido) {
       const idx = db.pedidos.findIndex(p => p.id === msg.pedido.id);
-      if (idx >= 0) db.pedidos[idx] = msg.pedido;
+      if (idx >= 0) { repIdAnterior = db.pedidos[idx].repId; db.pedidos[idx] = msg.pedido; }
+      else { db.pedidos.push(msg.pedido); } // pedido nuevo que este cliente todavía no tenía
     }
     renderAll(); renderRepAll(); updateSync();
     if (msg.pedido && rol === 'cliente' && cliPedidoId === msg.pedido.id) {
@@ -2732,10 +2767,15 @@ function handle(msg) {
     }
     if (msg.pedido && rol === 'rep') {
       if (msg.pedido.repId == miRepId) {
-        if (msg.pedido.estado === 'preparando') { toast('✅ Pedido #' + msg.pedido.id + ' listo para retirar!','rep'); sonarNotif('listo'); vib(); }
+        if (msg.pedido.estado === 'preparando' && msg.pedido.listoRetiro) { toast('✅ Pedido #' + msg.pedido.id + ' listo para retirar!','rep'); sonarNotif('listo'); vib(); }
         if (msg.pedido.estado === 'entregado') sonarNotif('entregado');
-        // Aviso cuando te asignan un pedido que estaba sin repartidor
-        if (msg.pedido.estado === 'pendiente') { toast('🔔 ¡Pedido #' + msg.pedido.id + ' asignado a vos!','rep'); sonarNotif('nuevo'); vib(); }
+        // BUGFIX: esto antes comparaba contra estado==='pendiente', que en la
+        // práctica nunca coincide en el momento de la asignación (el pedido
+        // ya está en 'preparando' cuando caja le asigna un rider) — el rider
+        // nunca recibía ningún aviso sonoro/visual al ser asignado, se
+        // enteraba recién si volvía a entrar y notaba el pedido nuevo en la
+        // lista. Ahora se compara el repId de antes contra el de ahora.
+        if (repIdAnterior != miRepId) { toast('🔔 ¡Pedido #' + msg.pedido.id + ' asignado a vos!','rep'); sonarNotif('nuevo'); vib(); }
       }
     }
   }
@@ -3639,6 +3679,11 @@ function addCart() {
 }
 function rmCart(i) { carrito.splice(i,1); renderCarrito(); }
 function renderCarrito() {
+  // BUGFIX: el carrito vivía solo en una variable de JS — recargar la
+  // página, cerrar la pestaña sin querer o que el navegador mate la
+  // pestaña en background lo borraba por completo, sin aviso. Se guarda
+  // acá porque TODA mutación del carrito termina llamando a renderCarrito().
+  try { localStorage.setItem('cli_carrito', JSON.stringify(carrito)); } catch(e) {}
   const div = document.getElementById('cartDiv');
   if (!carrito.length) { div.innerHTML = ''; calcTotal(); return; }
   div.innerHTML = `<div style="margin-bottom:10px">${carrito.map((c,i) => `
@@ -3781,14 +3826,7 @@ async function cancelar(id) {
     if (pin === null) return;
     let autorizado = false;
     let nombreAutorizante = 'Gerente';
-    // BUGFIX: esto solo probaba contra /api/auth/login — la clave MAESTRA
-    // del sistema (la que usa el desarrollador/dueño para entrar como
-    // "Admin"). Un gerente del local tiene su PIN cargado como EMPLEADO
-    // (rol 'gerente'), que se valida en /api/empleados/login, no acá. Eso
-    // obligaba a usar la clave del sistema para algo tan de todos los días
-    // como cancelar un pedido — no tiene sentido operativo. Ahora se prueba
-    // primero contra empleados (gerente) y, si no matchea, contra la clave
-    // maestra (admin), igual que hace el login de Caja con el mismo patrón.
+    let errorAutorizacion = null;
     try {
       const res1 = await fetch(getApiBase() + '/api/empleados/login', {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
@@ -3796,6 +3834,8 @@ async function cancelar(id) {
       const data1 = await res1.json();
       if (data1.ok && data1.empleado?.rol === 'gerente') {
         autorizado = true; tokenAutorizante = data1.token; nombreAutorizante = data1.empleado.nombre || 'Gerente';
+      } else if (data1.error) {
+        errorAutorizacion = data1.error;
       }
     } catch(e) {}
     if (!autorizado) {
@@ -3805,9 +3845,14 @@ async function cancelar(id) {
         });
         const data2 = await res2.json();
         if (data2.ok && data2.rol === 'admin') { autorizado = true; tokenAutorizante = data2.token; nombreAutorizante = 'Admin'; }
+        // BUGFIX: mismo bug del rate limiter que ya arreglamos en el login de
+        // Caja y Admin (auth.js bloquea 5 intentos/15min por IP) — acá se
+        // ignoraba el motivo real y siempre decía "PIN incorrecto", incluso
+        // si el problema era el bloqueo temporal y no la clave en sí.
+        else if (data2.error && !errorAutorizacion) { errorAutorizacion = data2.error; }
       } catch(e) {}
     }
-    if (!autorizado) { toast('❌ PIN incorrecto — cancelación no autorizada','warn'); return; }
+    if (!autorizado) { toast('❌ ' + (errorAutorizacion || 'PIN incorrecto') + ' — cancelación no autorizada','warn'); return; }
     toast('🔓 Autorizado por ' + nombreAutorizante,'ok');
   }
   const motivo = prompt('Motivo de cancelación (requerido para el reporte):','');
@@ -5881,7 +5926,7 @@ function chatKeydown(e) { if(e.key==='Enter'&&!e.shiftKey){ e.preventDefault(); 
 // ═══════════════════════════════════════════
 // LÓGICA DEL CLIENTE
 // ═══════════════════════════════════════════
-let cliCarrito = [];
+let cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
 let cliMpagoSel = 'efectivo';
 let cliPedidoId = null;
 let cliCategoria = 'todas';
@@ -6028,6 +6073,20 @@ async function entrarClienteReal() {
   rol = 'cliente';
   sessionStorage.setItem('rol', 'cliente');
   sessionStorage.setItem('rolCliente', '1');
+
+  // BUGFIX: restaurar el carrito si el cliente lo había armado y salió sin
+  // querer (ver actualizarCartBtn(), donde se guarda en cada cambio).
+  try {
+    const guardado = localStorage.getItem('cli_carrito');
+    if (guardado) {
+      const parsed = JSON.parse(guardado);
+      if (Array.isArray(parsed) && parsed.length) {
+        cliCarrito = parsed;
+        toast('🛒 Recuperamos tu pedido anterior', 'ok');
+        setTimeout(() => { try { actualizarCartBtn(); renderMenuCli(); } catch(e) {} }, 300);
+      }
+    }
+  } catch(e) {}
   document.getElementById('roleScreen').classList.remove('show');
   document.getElementById('appCliente').style.display = 'block';
   const negNom = db.negocio || 'Mi Negocio';
@@ -6091,7 +6150,7 @@ function renderCliRegTabs() {
     contenido.innerHTML = `
       <div class="fl"><label>Tu teléfono registrado</label><input id="loginTel" type="tel" placeholder="+54 9 221..." autocomplete="tel" style="font-size:16px"></div>
       <div style="font-size:11px;color:var(--t3);margin-bottom:16px">Ingresá el teléfono con el que te registraste para recuperar tu historial.</div>
-      <button class="btn btn-teal" onclick="loginClienteExistente()" style="font-size:15px;padding:14px">→ Ingresar</button>`;
+      <button id="loginTelBtn" class="btn btn-teal" onclick="loginClienteExistente()" style="font-size:15px;padding:14px">→ Ingresar</button>`;
   }
 }
 
@@ -6121,17 +6180,48 @@ function registrarClienteNuevo() {
   mostrarMenuLogueado();
 }
 
-function loginClienteExistente() {
+async function loginClienteExistente() {
   const tel = document.getElementById('loginTel')?.value.trim();
   if (!tel) { toast('Ingresá tu teléfono', 'warn'); return; }
+  const telLimpio = tel.replace(/\D/g,'');
   const telGuard = localStorage.getItem('cli_tel');
-  if (!telGuard || telGuard.replace(/\D/g,'') !== tel.replace(/\D/g,'')) {
-    toast('No encontramos esa cuenta en este dispositivo. ¿Querés registrarte?', 'warn'); return;
+
+  if (telGuard && telGuard.replace(/\D/g,'') === telLimpio) {
+    const cliId = localStorage.getItem('cli_id') || Date.now();
+    cliSesionActiva = { id: parseInt(cliId), nombre: localStorage.getItem('cli_nombre')||'', tel: localStorage.getItem('cli_tel')||'', dir: localStorage.getItem('cli_dir')||'' };
+    toast('✅ ¡Bienvenido de nuevo, ' + cliSesionActiva.nombre.split(' ')[0] + '!', 'ok');
+    mostrarMenuLogueado();
+    return;
   }
-  const cliId = localStorage.getItem('cli_id') || Date.now();
-  cliSesionActiva = { id: parseInt(cliId), nombre: localStorage.getItem('cli_nombre')||'', tel: localStorage.getItem('cli_tel')||'', dir: localStorage.getItem('cli_dir')||'' };
-  toast('✅ ¡Bienvenido de nuevo, ' + cliSesionActiva.nombre.split(' ')[0] + '!', 'ok');
-  mostrarMenuLogueado();
+
+  // BUGFIX: antes, si este dispositivo no tenía el teléfono guardado (celular
+  // nuevo, navegador distinto, datos borrados), directamente decía "no
+  // encontramos esa cuenta" — aunque el cliente SÍ estuviera guardado en el
+  // servidor desde su registro (guardarClienteEnServidor ya lo manda ahí).
+  // Ahora, si no lo encuentra en este aparato, busca en el servidor antes
+  // de darlo por perdido.
+  const btn = document.getElementById('loginTelBtn');
+  if (btn) { btn.textContent = 'Buscando...'; btn.disabled = true; }
+  try {
+    const clientes = await fetch(getApiBase() + '/api/clientes').then(r=>r.json());
+    const encontrado = (clientes||[]).find(c => c.tel && c.tel.replace(/\D/g,'') === telLimpio);
+    if (encontrado) {
+      const cliId = Date.now();
+      localStorage.setItem('cli_id', cliId);
+      localStorage.setItem('cli_nombre', encontrado.nombre || '');
+      localStorage.setItem('cli_tel', encontrado.tel || tel);
+      localStorage.setItem('cli_dir', encontrado.dir || '');
+      cliSesionActiva = { id: cliId, nombre: encontrado.nombre||'', tel: encontrado.tel||tel, dir: encontrado.dir||'' };
+      toast('✅ ¡Bienvenido de nuevo, ' + (encontrado.nombre||'').split(' ')[0] + '!', 'ok');
+      mostrarMenuLogueado();
+    } else {
+      toast('No encontramos esa cuenta. ¿Querés registrarte?', 'warn');
+    }
+  } catch(e) {
+    toast('No encontramos esa cuenta en este dispositivo, y no pudimos consultar el servidor. ¿Querés registrarte?', 'warn');
+  } finally {
+    if (btn) { btn.textContent = 'Ingresar'; btn.disabled = false; }
+  }
 }
 
 function mostrarMenuLogueado() {
@@ -6273,6 +6363,12 @@ function cliQty(prodId, delta) {
 }
 
 function actualizarCartBtn() {
+  // BUGFIX: cliCarrito vivía solo en memoria — si el cliente salía sin
+  // querer (recarga, cierre accidental, la pestaña muere en background),
+  // se perdía el pedido armado sin ningún aviso. Se guarda acá porque las
+  // dos formas de modificar el carrito (cliQty y cualquier otra) terminan
+  // llamando a esta función.
+  try { localStorage.setItem('cli_carrito', JSON.stringify(cliCarrito)); } catch(e) {}
   const total = cliCarrito.reduce((s, c) => s + c.cant, 0);
   const btn = document.getElementById('cliCartBtn');
   const btnPedido = document.getElementById('cliBtnPedido');
@@ -6348,6 +6444,14 @@ function selMpago(el, metodo) {
 }
 
 async function confirmarPedidoCli() {
+  // BUGFIX: sin esto, un doble-tap en el botón (fácil que pase en celular,
+  // sobre todo si la pantalla tarda un instante en cambiar) ejecutaba esta
+  // función dos veces — creando DOS pedidos separados y, para tarjeta, dos
+  // formularios de Mercado Pago apilados uno arriba del otro.
+  if (window._confirmandoPedidoCli) return;
+  window._confirmandoPedidoCli = true;
+  setTimeout(() => { window._confirmandoPedidoCli = false; }, 3000);
+
   const notas = document.getElementById('cliNotas').value.trim();
   let nom, tel, dir;
 
@@ -6412,7 +6516,7 @@ async function confirmarPedidoCli() {
     cliPedidoId = resp.pedido.id;
     localStorage.setItem('cli_nombre', nom); localStorage.setItem('cli_tel', tel); localStorage.setItem('cli_dir', dir);
     mostrarTracking(resp.pedido);
-    cliCarrito = [];
+    cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
     if (cliMpagoSel === 'qr') {
       toast('⏳ Pedido enviado — completá el pago QR en el local', 'warn');
     } else {
@@ -6540,6 +6644,15 @@ let _mpBrickController = null;
 // en campos que son iframes seguros de Mercado Pago (nunca tocan nuestro
 // servidor ni nuestro JS — eso lo exige el propio MP por PCI compliance).
 async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
+  // BUGFIX: si esta función se disparaba dos veces (doble tap en el botón,
+  // o una reconexión de WebSocket mientras esta pantalla seguía abierta),
+  // se creaba un pedido NUEVO y un formulario de Mercado Pago NUEVO cada
+  // vez, apilados arriba del anterior sin sacarlo — porque el div se
+  // agregaba con appendChild sin limpiar nada antes. De ahí el formulario
+  // de pago duplicado en pantalla. Limpieza defensiva al empezar, sin
+  // importar por qué camino se llegó acá dos veces.
+  if (_mpBrickController) { try { _mpBrickController.unmount(); } catch(e) {} _mpBrickController = null; }
+  document.querySelectorAll('#cliPagoPantalla').forEach(el => el.remove());
   const pedido = {
     cli: nom, tel, dir, notas,
     repId: null, repNombre: null,
@@ -6602,7 +6715,7 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
             });
             const data = await r.json();
             if (data.ok && data.status === 'approved') {
-              cliCarrito = [];
+              cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
               document.getElementById('cliPagoPantalla')?.remove();
               cliPedidoId = pedidoId;
               mostrarTracking(resp.pedido);
@@ -6668,7 +6781,7 @@ async function enviarPedidoYAbrirMP(nom, tel, dir, notas, sub) {
     });
     const mpData = await mpRes.json();
     if (mpData.ok && mpData.initPoint) {
-      cliCarrito = [];
+      cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
       // Guardar todo en localStorage antes de salir de la página
       localStorage.setItem('cli_pedido_activo', String(cliPedidoId));
       localStorage.setItem('cli_nombre', nom);
@@ -6714,7 +6827,7 @@ async function enviarPedidoConComprobante(nom, tel, dir, notas, sub, mpago) {
       cliPedidoId = resp.pedido.id;
       document.getElementById('cliPagoPantalla')?.remove();
       mostrarTracking(resp.pedido);
-      cliCarrito = [];
+      cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
       toast('⏳ Pedido enviado — el cajero verificará tu transferencia', 'warn');
     } catch(e) { toast('Error al enviar.', 'warn'); }
   } else if (mpago === 'tarjeta') {
@@ -6745,7 +6858,7 @@ async function enviarPedidoConComprobante(nom, tel, dir, notas, sub, mpago) {
       cliPedidoId = resp.pedido.id;
       document.getElementById('cliPagoPantalla')?.remove();
       mostrarTracking(resp.pedido);
-      cliCarrito = [];
+      cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {}
       toast('⏳ Pedido enviado — el cajero procesará tu pago con tarjeta', 'warn');
     } catch(e) { toast('Error al enviar.', 'warn'); }
   }
@@ -6885,7 +6998,7 @@ async function enviarCalificacionCli() {
 }
 
 function nuevoPedidoCli() {
-  cliPedidoId = null; cliCarrito = []; cliCategoria = 'todas';
+  cliPedidoId = null; cliCarrito = []; try { localStorage.removeItem('cli_carrito'); } catch(e) {} cliCategoria = 'todas';
   ocultarTodasPantallasCli();
   document.getElementById('cliMenu').style.display = 'block';
   ['cliNom','cliTel','cliDir','cliNotas'].forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
@@ -7337,26 +7450,89 @@ function renderAdminEmpleados() {
       <div style="flex:1">
         <div style="font-weight:700;font-size:14px">${e.nombre}</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--t3)">${e.rol}</div>
-        <div style="font-size:11px;color:var(--t3)">${e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida : '🕐 Sin turno asignado'}</div>
+        <div style="font-size:11px;color:var(--t3)">${e.horarioSemanal ? '🕐 Horario semanal cargado' : (e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida+' (horario viejo, sin días)' : '🕐 Sin turno asignado')}</div>
       </div>
       <div style="display:flex;gap:6px">
-        <button onclick="editarTurnoEmpleadoAdmin(${e.id},'${e.turnoEntrada||''}','${e.turnoSalida||''}','${e.tarifaHora||0}')" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer">🕐 Turno</button>
+        <button onclick='editarTurnoEmpleadoAdmin(${e.id},${JSON.stringify(e.nombre)},${JSON.stringify(e.horarioSemanal||null)})' style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer">🕐 Turno</button>
         <button onclick="cambiarPinEmpleadoAdmin(${e.id})" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer;font-family:var(--mono)">✏️ PIN</button>
         <button class="rm" onclick="delEmpleadoAdmin(${e.id})" style="color:var(--rose)">✕</button>
       </div>
     </div>`).join('');
 }
 
-async function editarTurnoEmpleadoAdmin(id, turnoEntradaActual, turnoSalidaActual, tarifaActual) {
-  const entrada = prompt('Hora de entrada del turno (HH:MM, 24hs):', turnoEntradaActual || '');
-  if (entrada === null) return;
-  const salida = prompt('Hora de salida del turno (HH:MM, 24hs):', turnoSalidaActual || '');
-  if (salida === null) return;
-  const tarifa = prompt('Tarifa por hora (para nómina):', tarifaActual || '0');
-  if (tarifa === null) return;
-  const res = await api('PUT', `/empleados/${id}`, { turnoEntrada: entrada || null, turnoSalida: salida || null, tarifaHora: Number(tarifa) || 0 });
-  if (res?.ok) { toast('✅ Turno actualizado', 'ok'); renderAdminEmpleados(); }
-  else toast('Error al actualizar el turno', 'warn');
+const DIAS_SEMANA_UI = ['lunes','martes','miercoles','jueves','viernes','sabado','domingo'];
+const DIAS_SEMANA_LABEL = { lunes:'Lunes', martes:'Martes', miercoles:'Miércoles', jueves:'Jueves', viernes:'Viernes', sabado:'Sábado', domingo:'Domingo' };
+let _horSemEmpId = null;
+
+function editarTurnoEmpleadoAdmin(id, nombre, horarioActual) {
+  _horSemEmpId = id;
+  document.getElementById('horSemNombre').textContent = nombre;
+  const cont = document.getElementById('horSemDias');
+  cont.innerHTML = DIAS_SEMANA_UI.map(dia => {
+    const turno = horarioActual?.[dia];
+    const descanso = !turno;
+    return `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--ink3);border-radius:8px" id="horSemRow-${dia}">
+      <div style="width:78px;font-size:12px;color:var(--t2)">${DIAS_SEMANA_LABEL[dia]}</div>
+      <input type="time" id="horSemEnt-${dia}" value="${turno?.entrada||''}" ${descanso?'disabled':''} onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
+      <span style="color:var(--t4);font-size:11px">a</span>
+      <input type="time" id="horSemSal-${dia}" value="${turno?.salida||''}" ${descanso?'disabled':''} onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
+      <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--t3);white-space:nowrap">
+        <input type="checkbox" id="horSemDesc-${dia}" ${descanso?'checked':''} onchange="toggleDescansoDia('${dia}')"> Descanso
+      </label>
+    </div>`;
+  }).join('');
+  document.getElementById('horSemError').style.display = 'none';
+  actualizarTotalHorSem();
+  document.getElementById('modalHorarioSemanal').classList.add('open');
+}
+
+function toggleDescansoDia(dia) {
+  const esDescanso = document.getElementById(`horSemDesc-${dia}`).checked;
+  document.getElementById(`horSemEnt-${dia}`).disabled = esDescanso;
+  document.getElementById(`horSemSal-${dia}`).disabled = esDescanso;
+  if (esDescanso) { document.getElementById(`horSemEnt-${dia}`).value=''; document.getElementById(`horSemSal-${dia}`).value=''; }
+  actualizarTotalHorSem();
+}
+
+function actualizarTotalHorSem() {
+  let totalMin = 0;
+  for (const dia of DIAS_SEMANA_UI) {
+    const desc = document.getElementById(`horSemDesc-${dia}`)?.checked;
+    if (desc) continue;
+    const ent = document.getElementById(`horSemEnt-${dia}`)?.value;
+    const sal = document.getElementById(`horSemSal-${dia}`)?.value;
+    if (!ent || !sal) continue;
+    const [eh,em] = ent.split(':').map(Number), [sh,sm] = sal.split(':').map(Number);
+    const mins = (sh*60+sm) - (eh*60+em);
+    if (mins > 0) totalMin += mins;
+  }
+  document.getElementById('horSemTotal').textContent = (totalMin/60).toFixed(1) + ' hs';
+}
+
+async function guardarHorarioSemanal() {
+  const horarioSemanal = {};
+  let algunDescanso = false;
+  for (const dia of DIAS_SEMANA_UI) {
+    const desc = document.getElementById(`horSemDesc-${dia}`).checked;
+    if (desc) { horarioSemanal[dia] = null; algunDescanso = true; continue; }
+    const ent = document.getElementById(`horSemEnt-${dia}`).value;
+    const sal = document.getElementById(`horSemSal-${dia}`).value;
+    if (!ent || !sal) { toast(`Completá entrada y salida del ${DIAS_SEMANA_LABEL[dia]}, o marcalo como descanso`, 'warn'); return; }
+    horarioSemanal[dia] = { entrada: ent, salida: sal };
+  }
+  if (!algunDescanso) { toast('Tiene que haber al menos un día de descanso', 'warn'); return; }
+  const errEl = document.getElementById('horSemError');
+  errEl.style.display = 'none';
+  const res = await api('PUT', `/empleados/${_horSemEmpId}`, { horarioSemanal });
+  if (res?.ok) {
+    toast('✅ Horario semanal guardado', 'ok');
+    document.getElementById('modalHorarioSemanal').classList.remove('open');
+    renderAdminEmpleados();
+  } else {
+    errEl.textContent = '❌ ' + (res?.error || 'Error al guardar');
+    errEl.style.display = 'block';
+  }
 }
 
 function previewAdminEmpFoto(input) {

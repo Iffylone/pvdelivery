@@ -302,7 +302,11 @@ const PING = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000);
+}, 15000); // BUGFIX: era 30000 — con eso, una conexión zombie podía tardar
+           // hasta ~60s en detectarse y cerrarse del lado del servidor
+           // (un ciclo sin respuesta + el siguiente ciclo para terminarla).
+           // Con 15s, el peor caso baja a ~30s. Sigue siendo lo bastante
+           // espaciado para no generar falsos positivos por latencia normal.
 wss.on('close', () => clearInterval(PING));
 
 wss.on('connection', async ws => {
@@ -1427,7 +1431,7 @@ app.post('/api/empleados', requireAuth('admin'), async (q, r) => {
 app.put('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
-    const { nombre, rol, pin, activo, turnoEntrada, turnoSalida, tarifaHora } = q.body;
+    const { nombre, rol, pin, activo, turnoEntrada, turnoSalida, tarifaHora, horarioSemanal } = q.body;
     let emp;
     if (useDB) {
       const res = await pool.query('SELECT data FROM empleados WHERE id=$1', [id]);
@@ -1444,6 +1448,13 @@ app.put('/api/empleados/:id', requireAuth('admin'), async (q, r) => {
     if (turnoEntrada !== undefined) emp.turnoEntrada = turnoEntrada || null;
     if (turnoSalida !== undefined) emp.turnoSalida = turnoSalida || null;
     if (tarifaHora !== undefined) emp.tarifaHora = Number(tarifaHora) || 0;
+    if (horarioSemanal !== undefined) {
+      // Validado server-side siempre — nunca confiar solo en la validación
+      // del cliente, porque el endpoint se puede llamar directo.
+      const error = validarHorarioSemanal(horarioSemanal);
+      if (error) return r.status(400).json({ ok: false, error });
+      emp.horarioSemanal = horarioSemanal;
+    }
     if (useDB) await pool.query('UPDATE empleados SET data=$1 WHERE id=$2', [JSON.stringify(emp), id]);
     await bcast('DATOS_ACTUALIZADOS', {});
     const { pin: _p, ...empSinPin } = emp;
@@ -1477,6 +1488,71 @@ function dentroDeTurno(entrada, salida, horaActual) {
   return horaActual >= entrada || horaActual <= salida; // turno cruza medianoche (ej. 22:00–06:00)
 }
 
+// ── Horarios de trabajo: estación del año + validación semanal ─────
+// Solo tengo confirmado el horario de INVIERNO (8:00–23:30). Los otros tres
+// quedan con el MISMO valor como placeholder — pedirle a Rafael los reales
+// de verano/otoño/primavera y reemplazar acá antes de confiar en esto para
+// esas épocas del año.
+const VENTANAS_OPERATIVAS = {
+  invierno:   { apertura: '08:00', cierre: '23:30' }, // confirmado
+  verano:     { apertura: '08:00', cierre: '23:30' }, // TODO: placeholder, pedir valor real
+  otonio:     { apertura: '08:00', cierre: '23:30' }, // TODO: placeholder, pedir valor real
+  primavera:  { apertura: '08:00', cierre: '23:30' }, // TODO: placeholder, pedir valor real
+};
+const DIAS_SEMANA = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
+
+function obtenerEstacionArgentina(fecha = new Date()) {
+  // Hemisferio sur: invierno jun-sep, primavera sep-dic, verano dic-mar, otoño mar-jun.
+  const hoyArg = new Date(fecha.toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+  const mes = hoyArg.getMonth() + 1; // 1-12
+  const dia = hoyArg.getDate();
+  if ((mes === 12 && dia >= 21) || mes === 1 || mes === 2 || (mes === 3 && dia < 21)) return 'verano';
+  if ((mes === 3 && dia >= 21) || mes === 4 || mes === 5 || (mes === 6 && dia < 21)) return 'otonio';
+  if ((mes === 6 && dia >= 21) || mes === 7 || mes === 8 || (mes === 9 && dia < 23)) return 'invierno';
+  return 'primavera';
+}
+
+function minutosDesdeMedianoche(hhmm) {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+}
+
+// Devuelve null si el horario semanal es válido, o un string con el motivo si no.
+function validarHorarioSemanal(horarioSemanal) {
+  if (!horarioSemanal || typeof horarioSemanal !== 'object') return 'Falta el horario semanal';
+  const estacion = obtenerEstacionArgentina();
+  const ventana = VENTANAS_OPERATIVAS[estacion];
+  let totalMinutosSemana = 0;
+  let tieneDescanso = false;
+
+  for (const dia of DIAS_SEMANA) {
+    const turno = horarioSemanal[dia];
+    if (!turno || !turno.entrada || !turno.salida) { tieneDescanso = true; continue; }
+    const { entrada, salida } = turno;
+    if (!/^\d{2}:\d{2}$/.test(entrada) || !/^\d{2}:\d{2}$/.test(salida)) {
+      return `Horario inválido el ${dia} (formato HH:MM)`;
+    }
+    const inicioMin = minutosDesdeMedianoche(entrada);
+    const finMin = minutosDesdeMedianoche(salida);
+    if (finMin <= inicioMin) return `El ${dia} la salida tiene que ser después de la entrada`;
+    const duracionHs = (finMin - inicioMin) / 60;
+    if (duracionHs < 4) return `El turno del ${dia} dura menos de 4hs (mínimo permitido)`;
+    if (duracionHs > 8) return `El turno del ${dia} dura más de 8hs (máximo permitido)`;
+    const apertura = minutosDesdeMedianoche(ventana.apertura);
+    const cierre = minutosDesdeMedianoche(ventana.cierre);
+    if (inicioMin < apertura || finMin > cierre) {
+      return `El turno del ${dia} (${entrada}–${salida}) queda fuera del horario del local en ${estacion} (${ventana.apertura}–${ventana.cierre})`;
+    }
+    totalMinutosSemana += (finMin - inicioMin);
+  }
+
+  if (!tieneDescanso) return 'Tiene que haber al menos un día de descanso en la semana';
+  // Ley de Contrato de Trabajo (Argentina): tope general de 48hs semanales.
+  const totalHorasSemana = totalMinutosSemana / 60;
+  if (totalHorasSemana > 48) return `El total semanal (${totalHorasSemana}hs) supera el máximo legal de 48hs`;
+  return null; // válido
+}
+
 app.post('/api/empleados/login', loginLimiter, async (q, r) => {
   try {
     const { pin } = q.body;
@@ -1499,8 +1575,18 @@ app.post('/api/empleados/login', loginLimiter, async (q, r) => {
     // para autorizar cosas (ej. cancelaciones) fuera del turno normal.
     if (encontrado.rol !== 'gerente' && encontrado.rol !== 'admin') {
       const horaAct = horaActualArgentina();
-      if (!dentroDeTurno(encontrado.turnoEntrada, encontrado.turnoSalida, horaAct)) {
-        return r.json({ ok: false, error: `Fuera de tu horario de turno (${encontrado.turnoEntrada}–${encontrado.turnoSalida}). Hora actual: ${horaAct}.` });
+      const hoyArg = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Argentina/Buenos_Aires' }));
+      const diaHoy = DIAS_SEMANA[hoyArg.getDay()];
+      const turnoHoy = encontrado.horarioSemanal?.[diaHoy];
+      // Compatibilidad con empleados que todavía tienen el horario viejo
+      // (turnoEntrada/turnoSalida fijo, sin horarioSemanal cargado todavía).
+      const entradaCheck = turnoHoy?.entrada ?? encontrado.turnoEntrada;
+      const salidaCheck = turnoHoy?.salida ?? encontrado.turnoSalida;
+      if (encontrado.horarioSemanal && !turnoHoy) {
+        return r.json({ ok: false, error: `Hoy (${diaHoy}) es tu día de descanso.` });
+      }
+      if (!dentroDeTurno(entradaCheck, salidaCheck, horaAct)) {
+        return r.json({ ok: false, error: `Fuera de tu horario de turno (${entradaCheck}–${salidaCheck}). Hora actual: ${horaAct}.` });
       }
     }
     // Persistir el rehash si veníamos de un PIN viejo en texto plano
