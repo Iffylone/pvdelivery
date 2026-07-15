@@ -90,6 +90,14 @@ body {
   #appLocal, #appRep, #appCliente { min-height: 100vh; display: none; flex-direction: column; align-items: center; }
   #appLocal.show, #appRep.show, #appCliente.show { display: flex; }
   #appLocal > *, #appRep > *, #appCliente > * { width: 100%; max-width: 560px; }
+  /* El panel de Admin tiene su propio sistema de scroll interno cerrado
+     (#adminLayout con altura fija + #adminContent con su propio overflow) —
+     nunca dependió de que el body scrollee. Si el body TAMBIÉN intenta
+     scrollear mientras Admin está activo, quedan dos contenedores de scroll
+     compitiendo y la rueda del mouse deja de llegarle al que realmente
+     tiene el contenido — por eso Configuración (con más cards de las que
+     entran en una pantalla) se quedaba trabada sin poder bajar. */
+  body:has(#appAdmin.show) { overflow: hidden; }
 }
 /* En navegador desktop/tablet: scroll normal */
 @media not (display-mode: standalone) {
