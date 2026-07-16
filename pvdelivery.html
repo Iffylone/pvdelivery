@@ -80,25 +80,26 @@ body {
   font-family: var(--sans); background: var(--ink); color: var(--t1);
   min-height: 100%; font-size: 14px; line-height: 1.6; overflow-x: hidden;
 }
-/* En mobile instalado como PWA: fullscreen */
-/* En mobile instalado como PWA: fullscreen, PERO con scroll normal (no el
-   truco de flex:1/height:0 que se rompía si algún contenedor intermedio del
-   panel de admin no era 100% flex — el contenido quedaba ahí, recortado sin
-   forma de verlo, adentro de un overflow:hidden). Mismo comportamiento que
-   ya funciona bien en el navegador (ver el media query de abajo). */
+/* En mobile instalado como PWA: fullscreen.
+   BUGFIX (tercer intento, enfoque distinto): las dos versiones anteriores
+   dependían de que el BODY hiciera el scroll, confiando en que el contenido
+   "empujara" su altura hacia arriba a través de min-height:100vh — un
+   patrón que resultó frágil en el contexto de la app instalada (Chrome en
+   modo standalone mide/propaga alturas distinto que en una pestaña normal).
+   Ahora cada pantalla (#appLocal, #appRep, #appCliente) tiene su PROPIA
+   altura fija de exactamente 100vh y su PROPIO scroll interno — no dependen
+   de ningún cálculo de altura de ningún padre ni del body. Es el patrón más
+   simple posible para "pantalla completa con scroll" y no debería poder
+   romperse por lo que pase en el panel de Admin ni en ningún otro lado. */
 @media (display-mode: standalone) {
-  body { position: fixed; inset: 0; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
-  #appLocal, #appRep, #appCliente { min-height: 100vh; display: none; flex-direction: column; align-items: center; }
+  body { overflow: hidden; }
+  #appLocal, #appRep, #appCliente {
+    display: none; flex-direction: column; align-items: center;
+    position: fixed; inset: 0; height: 100vh;
+    overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
   #appLocal.show, #appRep.show, #appCliente.show { display: flex; }
-  #appLocal > *, #appRep > *, #appCliente > * { width: 100%; max-width: 560px; }
-  /* El panel de Admin tiene su propio sistema de scroll interno cerrado
-     (#adminLayout con altura fija + #adminContent con su propio overflow) —
-     nunca dependió de que el body scrollee. Si el body TAMBIÉN intenta
-     scrollear mientras Admin está activo, quedan dos contenedores de scroll
-     compitiendo y la rueda del mouse deja de llegarle al que realmente
-     tiene el contenido — por eso Configuración (con más cards de las que
-     entran en una pantalla) se quedaba trabada sin poder bajar. */
-  body:has(#appAdmin.show) { overflow: hidden; }
+  #appLocal > *, #appRep > *, #appCliente > * { width: 100%; max-width: 560px; flex-shrink: 0; }
 }
 /* En navegador desktop/tablet: scroll normal */
 @media not (display-mode: standalone) {
@@ -3900,6 +3901,12 @@ function setF(f) {
   renderPedidos();
 }
 
+let _pedidosExpandidos = new Set();
+function togglePedidoExpandido(id) {
+  if (_pedidosExpandidos.has(id)) _pedidosExpandidos.delete(id); else _pedidosExpandidos.add(id);
+  renderPedidos();
+}
+
 function renderPedidos() {
   const div = document.getElementById('listaPedidos');
   const ESTADOS_ACTIVOS = ['pendiente','preparando','camino','esperando_pago'];
@@ -3910,6 +3917,27 @@ function renderPedidos() {
       : db.pedidos.filter(p => p.estado===filtro);
   if (!lista.length) { div.innerHTML=`<div class="empty"><div class="empty-ic">📭</div><p>Sin pedidos${filtro!=='todos'?' con ese estado':''} por ahora.</p></div>`; return; }
   div.innerHTML = lista.map(p => {
+    const expandido = _pedidosExpandidos.has(p.id);
+    // BUGFIX: antes cada pedido se mostraba SIEMPRE con la tarjeta completa
+    // (barra de progreso, ítems, todos los botones) — con varios pedidos en
+    // pantalla ocupaba muchísimo espacio vertical y obligaba a scrollear de
+    // más para ver la lista completa. Ahora cada pedido arranca colapsado,
+    // mostrando solo lo esencial en una fila, y se expande al tocarlo.
+    if (!expandido) {
+      return `<div class="pcard st-${p.estado==='esperando_pago'?'pendiente':p.estado}${p.estado==='cancelado'?' st-cancelado':''}" style="padding:10px 14px;cursor:pointer" onclick="togglePedidoExpandido(${p.id})">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+          <div style="min-width:0;flex:1">
+            <div class="pcnum" style="margin-bottom:2px">#${String(p.id).padStart(4,'0')} · ${new Date(p.fecha).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'})}</div>
+            <div class="pctitle" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${p.cli}${p.listoRetiro&&p.estado==='preparando'?' · 🔔 listo':''}</div>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <div class="pc-total" style="font-size:15px">$${p.total.toLocaleString()}</div>
+            <span class="badge ${EB[p.estado]||'b-pend'}" style="font-size:9px">${ELIC[p.estado]||'⏳'} ${EL[p.estado]||p.estado}</span>
+          </div>
+          <div style="color:var(--t4);font-size:12px">▼</div>
+        </div>
+      </div>`;
+    }
     const ei = ESTADOS.indexOf(p.estado);
     const track = ESTADOS.map((e,i) => `<div class="tstep ${i<ei?'done':i===ei?'cur '+STCOL[i]:''}"></div>`).join('');
     const tlbls = ESTADOS.map((e,i) => `<span class="tlbl ${i<ei?'done':i===ei?'cur':''}">${['Recib.','Cocina','Camino','Listo'][i]}</span>`).join('');
@@ -3942,9 +3970,9 @@ function renderPedidos() {
         </div>`}
       </div>` : '';
     return `<div class="pcard st-${p.estado==='esperando_pago'?'pendiente':p.estado}${p.estado==='cancelado'?' st-cancelado':''}">
-      <div class="pchead">
+      <div class="pchead" style="cursor:pointer" onclick="togglePedidoExpandido(${p.id})">
         <div>
-          <div class="pcnum">PEDIDO #${String(p.id).padStart(4,'0')} · ${new Date(p.fecha).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'})}</div>
+          <div class="pcnum">PEDIDO #${String(p.id).padStart(4,'0')} · ${new Date(p.fecha).toLocaleTimeString('es',{hour:'2-digit',minute:'2-digit'})} <span style="color:var(--t4)">▲ cerrar</span></div>
           <div class="pctitle">${p.cli}${p.codigoCli?` <span style="font-size:9px;font-family:var(--mono);color:var(--teal);background:var(--teal-bg);padding:2px 6px;border-radius:10px;margin-left:4px">${p.codigoCli}</span>`:''}${p.tipoPedido==='mesa'?` <span style="background:var(--sky-bg);color:var(--sky);border:1px solid var(--sky-bd);border-radius:10px;padding:2px 8px;font-size:10px;font-family:var(--mono);font-weight:700;margin-left:6px">🍽️ ${p.dir}</span>`:''}</div>
           <div class="pcsub">${p.tipoPedido==='mesa'?'Consumo en local':(p.dir+(p.repNombre?' · 🛵 '+p.repNombre:' · ⚠️ Sin repartidor'))}</div>
         </div>
