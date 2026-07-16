@@ -86,20 +86,31 @@ body {
    "empujara" su altura hacia arriba a través de min-height:100vh — un
    patrón que resultó frágil en el contexto de la app instalada (Chrome en
    modo standalone mide/propaga alturas distinto que en una pestaña normal).
-   Ahora cada pantalla (#appLocal, #appRep, #appCliente) tiene su PROPIA
-   altura fija de exactamente 100vh y su PROPIO scroll interno — no dependen
-   de ningún cálculo de altura de ningún padre ni del body. Es el patrón más
-   simple posible para "pantalla completa con scroll" y no debería poder
-   romperse por lo que pase en el panel de Admin ni en ningún otro lado. */
+   Ahora cada pantalla (#appLocal, #appRep, #appCliente, #appAdmin) tiene su
+   PROPIA altura fija de exactamente 100vh y su PROPIO scroll interno — no
+   dependen de ningún cálculo de altura de ningún padre ni del body. Es el
+   patrón más simple posible para "pantalla completa con scroll" y no
+   debería poder romperse por lo que pase en ninguna pantalla.
+   BUGFIX: la vez pasada dejé a #appAdmin AFUERA de este arreglo, confiando
+   en su sistema viejo (#adminLayout con altura calculada + #adminContent
+   con su propio scroll) — que es justo el que venía fallando. Ahora
+   #appAdmin entra al mismo mecanismo que todo el resto, y se neutraliza el
+   sistema viejo en modo standalone para que no compita con el nuevo. */
 @media (display-mode: standalone) {
   body { overflow: hidden; }
-  #appLocal, #appRep, #appCliente {
+  #appLocal, #appRep, #appCliente, #appAdmin {
     display: none; flex-direction: column; align-items: center;
     position: fixed; inset: 0; height: 100vh;
     overflow-y: auto; -webkit-overflow-scrolling: touch;
   }
-  #appLocal.show, #appRep.show, #appCliente.show { display: flex; }
+  #appLocal.show, #appRep.show, #appCliente.show, #appAdmin.show { display: flex; }
   #appLocal > *, #appRep > *, #appCliente > * { width: 100%; max-width: 560px; flex-shrink: 0; }
+  #appAdmin > * { width: 100%; flex-shrink: 0; }
+  /* Neutralizar el sistema viejo de scroll interno de Admin — ahora
+     #appAdmin (arriba) es el único que scrollea, estos ya no deben
+     limitar su propia altura ni tener su propio overflow. */
+  #adminLayout { height: auto !important; overflow: visible !important; }
+  #adminContent { flex: none !important; overflow: visible !important; height: auto !important; }
 }
 /* En navegador desktop/tablet: scroll normal */
 @media not (display-mode: standalone) {
@@ -7481,7 +7492,7 @@ function renderAdminEmpleados() {
         <div style="font-size:11px;color:var(--t3)">${e.horarioSemanal ? '🕐 Horario semanal cargado' : (e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida+' (horario viejo, sin días)' : '🕐 Sin turno asignado')}</div>
       </div>
       <div style="display:flex;gap:6px">
-        <button onclick='editarTurnoEmpleadoAdmin(${e.id},${JSON.stringify(e.nombre)},${JSON.stringify(e.horarioSemanal||null)})' style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer">🕐 Turno</button>
+        <button onclick='editarTurnoEmpleadoAdmin(${e.id},${JSON.stringify(e.nombre)},${JSON.stringify(e.horarioSemanal||null)})' style="background:none;border:1px solid var(--teal-bd);border-radius:6px;color:var(--teal);font-size:11px;padding:4px 8px;cursor:pointer;font-weight:700">🕐 Horario semanal</button>
         <button onclick="cambiarPinEmpleadoAdmin(${e.id})" style="background:none;border:1px solid var(--line);border-radius:6px;color:var(--t3);font-size:11px;padding:4px 8px;cursor:pointer;font-family:var(--mono)">✏️ PIN</button>
         <button class="rm" onclick="delEmpleadoAdmin(${e.id})" style="color:var(--rose)">✕</button>
       </div>
