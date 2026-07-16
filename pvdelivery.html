@@ -7509,7 +7509,15 @@ function editarTurnoEmpleadoAdmin(id, nombre, horarioActual) {
   const cont = document.getElementById('horSemDias');
   cont.innerHTML = DIAS_SEMANA_UI.map(dia => {
     const turno = horarioActual?.[dia];
-    const descanso = !turno;
+    // BUGFIX: esto marcaba "Descanso" en TODOS los días (y por lo tanto
+    // deshabilitaba los campos de hora) cada vez que el empleado no tenía
+    // ningún horario cargado todavía — que es el caso normal la primera vez
+    // que se usa esto. El campo no "no aceptaba digitar", estaba deshabilitado
+    // de entrada en los 7 días sin ningún aviso claro de por qué. Ahora solo
+    // arranca en "Descanso" un día si YA había un horario guardado antes Y
+    // ese día específico estaba guardado como descanso — si es la primera
+    // vez, todos los días arrancan habilitados y vacíos, listos para tipear.
+    const descanso = horarioActual ? !turno : false;
     return `
     <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--ink3);border-radius:8px" id="horSemRow-${dia}">
       <div style="width:78px;font-size:12px;color:var(--t2)">${DIAS_SEMANA_LABEL[dia]}</div>
