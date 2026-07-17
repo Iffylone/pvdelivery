@@ -2947,8 +2947,23 @@ async function api(method, path, body) {
       sessionStorage.removeItem('authToken');
       return null;
     }
-    if (!r.ok) { console.error('API error', r.status, path); return null; }
-    return r.json();
+    // BUGFIX GRANDE: antes, CUALQUIER respuesta que no fuera 2xx (400, 404,
+    // 409, etc.) se descartaba acá mismo sin leer el body, devolviendo null.
+    // El servidor SÍ manda el motivo exacto en el JSON (ej: "el jueves la
+    // salida tiene que ser después de la entrada"), pero nunca llegaba a
+    // pantalla — en NINGÚN lado de la app, no solo en horarios. Por eso
+    // siempre se veía "Error al guardar"/"Error al..." genérico sin pista
+    // de qué corregir, en cualquier formulario que fallara validación.
+    // Ahora se intenta leer el body siempre, sea 200 o no, y se devuelve
+    // tal cual — el que llama decide con res.ok / res.error.
+    try {
+      const data = await r.json();
+      if (!r.ok && data.ok === undefined) data.ok = false;
+      return data;
+    } catch(parseErr) {
+      if (!r.ok) { console.error('API error', r.status, path); return { ok: false, error: `Error del servidor (${r.status})` }; }
+      return null;
+    }
   } catch(e) {
     console.error('API fetch failed:', path, e.message);
     toast('Sin conexión al servidor — reintentando...', 'warn');
@@ -7683,11 +7698,30 @@ function actualizarEstadoFilaHorSem(dia) {
     previewEl.textContent = '🌙 Día de descanso';
     previewEl.style.color = 'var(--t3)';
   } else if (ent && sal) {
-    row.style.background = 'var(--teal-bg)';
-    row.style.borderColor = 'var(--teal-bd)';
-    lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
-    previewEl.textContent = `✅ ${formatear12hs(ent)} – ${formatear12hs(sal)}`;
-    previewEl.style.color = 'var(--teal)';
+    const [eh,em] = ent.split(':').map(Number), [sh,sm] = sal.split(':').map(Number);
+    const durMin = (sh*60+sm) - (eh*60+em);
+    if (durMin <= 0) {
+      // Mismo error que rechaza el servidor (turno que "cruza" medianoche
+      // no está soportado) — ahora se avisa ACÁ, antes de intentar guardar,
+      // en vez de dejar que el check se vea verde con datos inválidos.
+      row.style.background = 'var(--rose-bg, rgba(244,63,94,0.08))';
+      row.style.borderColor = 'var(--rose-bd)';
+      lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+      previewEl.textContent = `⚠️ La salida (${formatear12hs(sal)}) tiene que ser más tarde que la entrada (${formatear12hs(ent)}), mismo día`;
+      previewEl.style.color = 'var(--rose)';
+    } else if (durMin/60 < 4 || durMin/60 > 8) {
+      row.style.background = 'var(--amber-bg, rgba(245,158,11,0.08))';
+      row.style.borderColor = 'var(--amber-bd)';
+      lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+      previewEl.textContent = `⚠️ ${(durMin/60).toFixed(1)}hs — el turno tiene que durar entre 4 y 8hs`;
+      previewEl.style.color = 'var(--amber)';
+    } else {
+      row.style.background = 'var(--teal-bg)';
+      row.style.borderColor = 'var(--teal-bd)';
+      lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+      previewEl.textContent = `✅ ${formatear12hs(ent)} – ${formatear12hs(sal)} (${(durMin/60).toFixed(1)}hs)`;
+      previewEl.style.color = 'var(--teal)';
+    }
   } else {
     row.style.background = 'var(--rose-bg, rgba(244,63,94,0.08))';
     row.style.borderColor = 'var(--rose-bd)';
@@ -7730,6 +7764,10 @@ async function guardarHorarioSemanal() {
     const ent = document.getElementById(`horSemEnt-${dia}`).value;
     const sal = document.getElementById(`horSemSal-${dia}`).value;
     if (!ent || !sal) { toast(`Completá entrada y salida del ${DIAS_SEMANA_LABEL[dia]}, o marcalo como descanso`, 'warn'); return; }
+    const [eh,em] = ent.split(':').map(Number), [sh,sm] = sal.split(':').map(Number);
+    const durMin = (sh*60+sm) - (eh*60+em);
+    if (durMin <= 0) { toast(`El ${DIAS_SEMANA_LABEL[dia]}: la salida (${formatear12hs(sal)}) tiene que ser más tarde que la entrada (${formatear12hs(ent)}), mismo día`, 'warn'); return; }
+    if (durMin/60 < 4 || durMin/60 > 8) { toast(`El ${DIAS_SEMANA_LABEL[dia]} dura ${(durMin/60).toFixed(1)}hs — tiene que ser entre 4 y 8hs`, 'warn'); return; }
     horarioSemanal[dia] = { entrada: ent, salida: sal };
   }
   if (!algunDescanso) { toast('Tiene que haber al menos un día de descanso', 'warn'); return; }
