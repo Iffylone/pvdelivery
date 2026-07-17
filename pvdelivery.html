@@ -6377,6 +6377,21 @@ function ocultarTodasPantallasCli() {
   ['cliMenu','cliForm','cliTracking','cliRegistro','cliHistorial'].forEach(id => {
     const el = document.getElementById(id); if(el) el.style.display = 'none';
   });
+  // FIX RAÍZ de "dos pantallas mezcladas" (Local cerrado + seguimiento de
+  // pedido superpuestos): cliLocalCerrado y cliPagoPantalla NO son parte
+  // del HTML base — se crean con document.createElement en entrarCliente()
+  // y mostrarBrickTarjeta() respectivamente, y JAMÁS estuvieron en esta
+  // lista. Resultado: una vez que "Local cerrado" se mostraba (por ejemplo
+  // al entrar antes de que abrieran caja), quedaba en el DOM para SIEMPRE.
+  // Si más tarde el cliente terminaba en la pantalla de seguimiento (al
+  // reconectar el WS con un pedido activo guardado en localStorage),
+  // mostrarTracking() llamaba a esta función pensando que limpiaba todo —
+  // pero el candado de "Local cerrado" seguía ahí abajo, sin que nada lo
+  // hubiera sacado nunca. Se remueven del DOM entero, no solo se ocultan,
+  // porque son de un solo uso.
+  ['cliLocalCerrado','cliPagoPantalla'].forEach(id => {
+    const el = document.getElementById(id); if(el) el.remove();
+  });
 }
 
 function verHistorialCli() {
