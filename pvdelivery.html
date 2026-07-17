@@ -7635,19 +7635,66 @@ function editarTurnoEmpleadoAdmin(id, nombre, horarioActual) {
     // vez, todos los días arrancan habilitados y vacíos, listos para tipear.
     const descanso = horarioActual ? !turno : false;
     return `
-    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--ink3);border-radius:8px" id="horSemRow-${dia}">
-      <div style="width:78px;font-size:12px;color:var(--t2)">${DIAS_SEMANA_LABEL[dia]}</div>
-      <input type="time" id="horSemEnt-${dia}" value="${turno?.entrada||''}" ${descanso?'disabled':''} onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
-      <span style="color:var(--t4);font-size:11px">a</span>
-      <input type="time" id="horSemSal-${dia}" value="${turno?.salida||''}" ${descanso?'disabled':''} onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
-      <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--t3);white-space:nowrap">
-        <input type="checkbox" id="horSemDesc-${dia}" ${descanso?'checked':''} onchange="toggleDescansoDia('${dia}')"> Descanso
-      </label>
+    <div style="display:flex;flex-direction:column;gap:4px;padding:8px;border-radius:8px;border:1px solid var(--line)" id="horSemRow-${dia}">
+      <div style="display:flex;align-items:center;gap:8px">
+        <div style="width:78px;font-size:12px;color:var(--t2);font-weight:600">${DIAS_SEMANA_LABEL[dia]}</div>
+        <input type="time" id="horSemEnt-${dia}" value="${turno?.entrada||''}" ${descanso?'disabled':''} oninput="actualizarEstadoFilaHorSem('${dia}')" onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
+        <span style="color:var(--t4);font-size:11px">a</span>
+        <input type="time" id="horSemSal-${dia}" value="${turno?.salida||''}" ${descanso?'disabled':''} oninput="actualizarEstadoFilaHorSem('${dia}')" onchange="actualizarTotalHorSem()" style="flex:1;min-width:0">
+        <label style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--t2);white-space:nowrap;padding:5px 8px;border-radius:6px;border:1px solid var(--line);cursor:pointer" id="horSemDescLbl-${dia}">
+          <input type="checkbox" id="horSemDesc-${dia}" ${descanso?'checked':''} onchange="toggleDescansoDia('${dia}')" style="margin:0"> Descanso
+        </label>
+      </div>
+      <div id="horSemPreview-${dia}" style="font-size:11px;font-weight:600;padding-left:86px;min-height:14px"></div>
     </div>`;
   }).join('');
   document.getElementById('horSemError').style.display = 'none';
   actualizarTotalHorSem();
+  DIAS_SEMANA_UI.forEach(actualizarEstadoFilaHorSem);
   document.getElementById('modalHorarioSemanal').classList.add('open');
+}
+
+// Convierte "14:00" a "2:00 PM" para el texto de confirmación bajo cada fila.
+function formatear12hs(hhmm) {
+  if (!hhmm) return '--';
+  const [h, m] = hhmm.split(':').map(Number);
+  const periodo = h < 12 ? 'AM' : 'PM';
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2,'0')} ${periodo}`;
+}
+
+// Estado visual claro por día: gris = descanso, verde = completo, rojo =
+// falta resolver. Antes un día vacío-sin-decidir y un día marcado Descanso
+// se veían casi iguales (solo un checkbox de 10px de diferencia) — ahora
+// el color de fondo de toda la fila y el texto debajo lo dejan inequívoco
+// de un vistazo, sin tener que leer letra chica.
+function actualizarEstadoFilaHorSem(dia) {
+  const row = document.getElementById(`horSemRow-${dia}`);
+  const lbl = document.getElementById(`horSemDescLbl-${dia}`);
+  const previewEl = document.getElementById(`horSemPreview-${dia}`);
+  if (!row || !previewEl) return;
+  const desc = document.getElementById(`horSemDesc-${dia}`)?.checked;
+  const ent = document.getElementById(`horSemEnt-${dia}`)?.value;
+  const sal = document.getElementById(`horSemSal-${dia}`)?.value;
+  if (desc) {
+    row.style.background = 'var(--ink3)';
+    row.style.borderColor = 'var(--line)';
+    lbl.style.background = 'var(--t3)'; lbl.style.color = 'var(--ink)'; lbl.style.borderColor = 'var(--t3)';
+    previewEl.textContent = '🌙 Día de descanso';
+    previewEl.style.color = 'var(--t3)';
+  } else if (ent && sal) {
+    row.style.background = 'var(--teal-bg)';
+    row.style.borderColor = 'var(--teal-bd)';
+    lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+    previewEl.textContent = `✅ ${formatear12hs(ent)} – ${formatear12hs(sal)}`;
+    previewEl.style.color = 'var(--teal)';
+  } else {
+    row.style.background = 'var(--rose-bg, rgba(244,63,94,0.08))';
+    row.style.borderColor = 'var(--rose-bd)';
+    lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+    previewEl.textContent = '⚠️ Falta completar horario o marcar Descanso';
+    previewEl.style.color = 'var(--rose)';
+  }
 }
 
 function toggleDescansoDia(dia) {
@@ -7655,6 +7702,7 @@ function toggleDescansoDia(dia) {
   document.getElementById(`horSemEnt-${dia}`).disabled = esDescanso;
   document.getElementById(`horSemSal-${dia}`).disabled = esDescanso;
   if (esDescanso) { document.getElementById(`horSemEnt-${dia}`).value=''; document.getElementById(`horSemSal-${dia}`).value=''; }
+  actualizarEstadoFilaHorSem(dia);
   actualizarTotalHorSem();
 }
 
