@@ -6845,7 +6845,18 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
       callbacks: {
         onReady: () => {},
         onError: (err) => { console.error('Brick error:', err); document.getElementById('mpBrickMsg').innerHTML = '<span style="color:var(--rose)">Error al cargar el formulario de pago. Recargá la página.</span>'; },
-        onSubmit: async (formData) => {
+        onSubmit: async ({ selectedPaymentMethod, formData }) => {
+          // FIX RAÍZ DE "Datos de pago incompletos" (confirmado contra la doc
+          // oficial de MP): el callback onSubmit recibe { selectedPaymentMethod,
+          // formData } — NO formData directo. Antes tratábamos el objeto
+          // completo como si ya fueran los datos de la tarjeta, así que al
+          // mandar "...formData" al servidor en realidad mandábamos
+          // { selectedPaymentMethod, formData:{...} } — token y
+          // payment_method_id quedaban un nivel más adentro de lo que el
+          // servidor esperaba, y por eso SIEMPRE faltaban, sin importar qué
+          // tarjeta o datos pusieras. Esto es lo que rompía el flujo hace
+          // meses, no el email ni el DNI (esos igual hacen falta, pero no
+          // eran la causa de este error puntual).
           const msgEl = document.getElementById('mpBrickMsg');
           const emailInput = document.getElementById('mpPayerEmail')?.value?.trim();
           const dniInput = document.getElementById('mpPayerDni')?.value?.trim();
@@ -6860,7 +6871,7 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
             // DIAGNÓSTICO: si esto vuelve a fallar, este console.log muestra
             // en la consola del navegador (F12) exactamente qué mandó el
             // Brick — pedile a Rafael que lo copie la próxima vez.
-            console.log('[MP Brick] formData recibido:', formData);
+            console.log('[MP Brick] selectedPaymentMethod:', selectedPaymentMethod, '| formData recibido:', formData);
             const payerFinal = {
               email: formData?.payer?.email || emailInput,
               identification: formData?.payer?.identification?.number
