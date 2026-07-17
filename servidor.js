@@ -771,6 +771,32 @@ app.post('/api/reset', requireAuth('admin'), async (q, r) => {
   } catch(e) { console.error(e); r.status(500).json({ error: e.message }); }
 });
 
+// POST /api/pedidos/limpiar — borra en bloque SOLO los pedidos cuyo estado
+// esté en la lista pedida (ej: cancelado, esperando_pago). No toca clientes,
+// empleados, productos, repartidores ni config — a diferencia de
+// DELETE /api/pedidos (que ya existía y borra TODOS los pedidos del día,
+// usado por el botón "Cerrar día y resetear"). Esto es para limpiar pedidos
+// de prueba, colgados o cancelados sin afectar los pedidos activos/entregados.
+app.post('/api/pedidos/limpiar', requireAuth('admin'), async (q, r) => {
+  try {
+    const estados = Array.isArray(q.body?.estados) ? q.body.estados.filter(Boolean) : [];
+    if (!estados.length) return r.status(400).json({ ok: false, error: 'Especificá al menos un estado a limpiar.' });
+    let borrados = 0;
+    if (useDB) {
+      const res = await pool.query(
+        `DELETE FROM pedidos WHERE (data->>'estado') = ANY($1::text[])`, [estados]
+      );
+      borrados = res.rowCount || 0;
+    } else {
+      const antes = ram.pedidos.length;
+      ram.pedidos = ram.pedidos.filter(p => !estados.includes(p.estado));
+      borrados = antes - ram.pedidos.length;
+    }
+    await bcast('DATOS_ACTUALIZADOS', {});
+    r.json({ ok: true, borrados });
+  } catch(e) { console.error('[Limpiar pedidos] Error:', e.message); r.status(500).json({ error: e.message }); }
+});
+
 app.delete('/api/pedidos/:id', requireAuth('admin'), async (q, r) => {
   try {
     const id = parseInt(q.params.id);
@@ -1296,6 +1322,17 @@ app.post('/api/mp/pagar-tarjeta', async (q, r) => {
   try {
     const { pedidoId, token, payment_method_id, issuer_id, installments, payer, transaction_amount } = q.body;
     if (!pedidoId || !token || !payment_method_id) {
+      // DIAGNÓSTICO: loguear exactamente qué faltó, en vez de solo devolver
+      // el mensaje genérico. Sirve para ver en los logs de Render, la próxima
+      // vez que falle, si el Brick no mandó token, no mandó payment_method_id,
+      // o directamente no llegó payer/identification.
+      console.warn('[MP Pagar Tarjeta] Datos incompletos recibidos del Brick:', {
+        tienePedidoId: !!pedidoId, tieneToken: !!token,
+        payment_method_id: payment_method_id || '(faltante)',
+        issuer_id: issuer_id || '(faltante)', installments: installments || '(faltante)',
+        payerRecibido: payer ? Object.keys(payer) : '(sin payer)',
+        identification: payer?.identification || '(sin identification)'
+      });
       return r.status(400).json({ ok: false, error: 'Datos de pago incompletos.' });
     }
     let p;

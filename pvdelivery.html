@@ -20,7 +20,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
 /* ═══════════════════════════════════════════════
-   IFFYWARE SYSTEMS — Design System
+   IFFYWARE SYSTEMS Systems — Design System
    Palette: Deep Navy / Warm Charcoal / Electric Teal
    Typography: Sora (display) + DM Mono (data)
    Mood: Industrial refined, zero eye strain
@@ -1225,6 +1225,7 @@ select option { background: var(--ink3); }
     <button class="btn btn-ghost" style="margin-bottom:8px" onclick="exportWA()">📤 Resumen por WhatsApp</button>
     <button class="btn btn-ghost" style="margin-bottom:8px" onclick="exportCSV()">📁 Exportar CSV del día</button>
     <button class="btn btn-ghost" style="color:var(--rose);border-color:var(--rose-bd)" onclick="resetDia()">🗑️ Cerrar día y resetear</button>
+    <button class="btn btn-ghost" style="margin-top:8px" onclick="abrirLimpiarPedidos()">🧹 Limpiar pedidos por estado</button>
   </div>
 
   <!-- CONFIG -->
@@ -2011,6 +2012,34 @@ select option { background: var(--ink3); }
     <div id="horSemError" style="color:var(--rose);font-size:12px;margin-bottom:8px;display:none"></div>
     <button class="btn btn-teal" onclick="guardarHorarioSemanal()">💾 Guardar horario</button>
     <button class="btn btn-ghost" onclick="document.getElementById('modalHorarioSemanal').classList.remove('open')" style="margin-top:6px">Cancelar</button>
+  </div>
+</div>
+
+<!-- MODAL LIMPIAR PEDIDOS POR ESTADO -->
+<div class="modal" id="modalLimpiarPedidos" style="z-index:9200">
+  <div class="modal-box" style="max-width:420px">
+    <div class="modal-handle"></div>
+    <div class="modal-title">🧹 Limpiar pedidos por estado</div>
+    <div style="font-size:11px;color:var(--t3);margin-bottom:10px;line-height:1.5">
+      Borra <strong style="color:var(--t1)">solo</strong> los pedidos en los estados que marques. No toca clientes, empleados, productos ni repartidores. A diferencia de "Cerrar día y resetear", esto NO borra todos los pedidos — solo los que elijas.
+    </div>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:8px;background:var(--ink3);border-radius:8px">
+        <input type="checkbox" id="limpEstCancelado" checked> ❌ Cancelados
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:8px;background:var(--ink3);border-radius:8px">
+        <input type="checkbox" id="limpEstEsperandoPago" checked> ⏳ Esperando pago (nunca se pagaron / tarjeta rechazada)
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:8px;background:var(--ink3);border-radius:8px">
+        <input type="checkbox" id="limpEstPendiente"> 🕐 Pendientes (aún no confirmados a cocina)
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:8px;background:var(--ink3);border-radius:8px">
+        <input type="checkbox" id="limpEstEntregado"> ✅ Entregados (ojo — son pedidos completados de verdad)
+      </label>
+    </div>
+    <div id="limpPedidosMsg" style="font-size:12px;margin-bottom:8px;display:none"></div>
+    <button class="btn btn-teal" style="color:var(--rose)" onclick="confirmarLimpiarPedidos()">🧹 Limpiar seleccionados</button>
+    <button class="btn btn-ghost" onclick="document.getElementById('modalLimpiarPedidos').classList.remove('open')" style="margin-top:6px">Cancelar</button>
   </div>
 </div>
 
@@ -4579,6 +4608,35 @@ async function resetDia() {
   toast('Jornada cerrada — resumen guardado para mañana', 'ok');
 }
 
+function abrirLimpiarPedidos() {
+  if (!esAdmin()) { toast('⛔ Solo el gerente puede limpiar pedidos','warn'); return; }
+  document.getElementById('limpPedidosMsg').style.display = 'none';
+  document.getElementById('modalLimpiarPedidos').classList.add('open');
+}
+
+async function confirmarLimpiarPedidos() {
+  const estados = [];
+  if (document.getElementById('limpEstCancelado').checked) estados.push('cancelado');
+  if (document.getElementById('limpEstEsperandoPago').checked) estados.push('esperando_pago');
+  if (document.getElementById('limpEstPendiente').checked) estados.push('pendiente');
+  if (document.getElementById('limpEstEntregado').checked) estados.push('entregado');
+  const msgEl = document.getElementById('limpPedidosMsg');
+  if (!estados.length) {
+    msgEl.style.display = 'block'; msgEl.style.color = 'var(--amber)';
+    msgEl.textContent = 'Marcá al menos un estado.';
+    return;
+  }
+  if (!confirm(`¿Borrar todos los pedidos en estado: ${estados.join(', ')}? No se puede deshacer.`)) return;
+  const res = await api('POST', '/pedidos/limpiar', { estados });
+  if (res?.ok) {
+    toast(`✅ ${res.borrados} pedido(s) borrado(s)`, 'ok');
+    document.getElementById('modalLimpiarPedidos').classList.remove('open');
+  } else {
+    msgEl.style.display = 'block'; msgEl.style.color = 'var(--rose)';
+    msgEl.textContent = '❌ ' + (res?.error || 'Error al limpiar pedidos');
+  }
+}
+
 // ── PROMOS ───────────────────────────────────────────────
 async function addPromo() {
   const nom=document.getElementById('prmNom').value.trim();
@@ -6724,6 +6782,20 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
       <code style="background:var(--ink);padding:1px 5px;border-radius:4px">OTHE</code> = rechazado ·
       <code style="background:var(--ink);padding:1px 5px;border-radius:4px">CONT</code> = pendiente
     </div>` : ''}
+    <div style="padding:10px;background:var(--ink3);border-radius:8px;margin-bottom:12px">
+      <div style="font-size:11px;color:var(--t3);margin-bottom:8px;line-height:1.5">
+        Mercado Pago exige email y DNI del titular para procesar el pago — sin esto, el pago queda "incompleto" del lado de MP aunque completes la tarjeta.
+      </div>
+      <div class="fl" style="margin-bottom:8px"><label style="font-size:11px">Email del titular</label>
+        <input id="mpPayerEmail" type="email" placeholder="titular@ejemplo.com" value="${localStorage.getItem('cli_mp_email')||''}"
+          style="background:var(--ink);border:1px solid var(--line);color:var(--t1);padding:9px 12px;border-radius:8px;font-size:14px;width:100%">
+      </div>
+      <div class="fl"><label style="font-size:11px">DNI del titular (sin puntos)</label>
+        <input id="mpPayerDni" type="text" inputmode="numeric" maxlength="8" placeholder="12345678" value="${localStorage.getItem('cli_mp_dni')||''}"
+          oninput="this.value=this.value.replace(/\\D/g,'').slice(0,8)"
+          style="background:var(--ink);border:1px solid var(--line);color:var(--t1);padding:9px 12px;border-radius:8px;font-size:14px;width:100%">
+      </div>
+    </div>
     <div id="mpBrickContainer"></div>
     <div id="mpBrickMsg" style="margin-top:10px;font-size:13px;text-align:center"></div>
     <div style="padding:10px;background:var(--teal-bg);border:1px solid var(--teal-bd);border-radius:8px;margin-top:12px;font-size:12px;color:var(--teal);line-height:1.7">
@@ -6733,10 +6805,19 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
   document.getElementById('appCliente').querySelector('.cli-wrap').appendChild(div);
 
   try {
+    // BUGFIX (causa probable de "Datos de pago incompletos" en 3+ meses):
+    // según la documentación oficial de MP, los campos mínimos obligatorios
+    // para crear el pago son token, transaction_amount, installments,
+    // payment_method_id y payer.email. El Brick nunca recibía payer.email
+    // en su initialization (ni se pedía en ningún lado del formulario del
+    // cliente) — eso puede hacer que el propio Brick no complete bien el
+    // formData en onSubmit para ciertos medios de pago (particularmente
+    // débito, que en Argentina suele requerir también el DNI del titular).
+    const mpEmailInicial = document.getElementById('mpPayerEmail')?.value?.trim();
     const mp = new MercadoPago(publicKey, { locale: 'es-AR' });
     const bricksBuilder = mp.bricks();
     _mpBrickController = await bricksBuilder.create('payment', 'mpBrickContainer', {
-      initialization: { amount: sub },
+      initialization: { amount: sub, payer: { email: mpEmailInicial || undefined } },
       customization: {
         paymentMethods: { creditCard: 'all', debitCard: 'all', maxInstallments: 1 },
         visual: { style: { theme: 'dark' } }
@@ -6746,11 +6827,29 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
         onError: (err) => { console.error('Brick error:', err); document.getElementById('mpBrickMsg').innerHTML = '<span style="color:var(--rose)">Error al cargar el formulario de pago. Recargá la página.</span>'; },
         onSubmit: async (formData) => {
           const msgEl = document.getElementById('mpBrickMsg');
+          const emailInput = document.getElementById('mpPayerEmail')?.value?.trim();
+          const dniInput = document.getElementById('mpPayerDni')?.value?.trim();
+          if (!emailInput || !emailInput.includes('@')) {
+            msgEl.innerHTML = '<span style="color:var(--rose)">Completá un email válido del titular antes de pagar.</span>';
+            throw new Error('email requerido');
+          }
+          localStorage.setItem('cli_mp_email', emailInput);
+          if (dniInput) localStorage.setItem('cli_mp_dni', dniInput);
           msgEl.innerHTML = '<span style="color:var(--t3)">⏳ Procesando pago...</span>';
           try {
+            // DIAGNÓSTICO: si esto vuelve a fallar, este console.log muestra
+            // en la consola del navegador (F12) exactamente qué mandó el
+            // Brick — pedile a Rafael que lo copie la próxima vez.
+            console.log('[MP Brick] formData recibido:', formData);
+            const payerFinal = {
+              email: formData?.payer?.email || emailInput,
+              identification: formData?.payer?.identification?.number
+                ? formData.payer.identification
+                : (dniInput ? { type: 'DNI', number: dniInput } : undefined)
+            };
             const r = await fetch(getApiBase() + '/api/mp/pagar-tarjeta', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ pedidoId, transaction_amount: sub, ...formData })
+              body: JSON.stringify({ pedidoId, transaction_amount: sub, ...formData, payer: payerFinal })
             });
             const data = await r.json();
             if (data.ok && data.status === 'approved') {
@@ -7478,6 +7577,23 @@ async function cargarReporteNomina() {
     </div>`).join('');
 }
 
+// Arma el resumen legible del horario semanal de un empleado, ej:
+// "Lun 08:00-16:00 · Mar 08:00-16:00 · Mié desc. · Jue 08:00-16:00 · ..."
+// Antes esto no existía: la lista de empleados solo mostraba "Horario
+// semanal cargado" sin ningún detalle, así que no había forma de consultar
+// qué turnos tiene alguien sin abrir el modal de edición.
+function resumenHorarioSemanal(hs) {
+  if (!hs) return '🕐 Sin turno asignado';
+  const dias = [
+    ['lunes','Lun'], ['martes','Mar'], ['miercoles','Mié'], ['jueves','Jue'],
+    ['viernes','Vie'], ['sabado','Sáb'], ['domingo','Dom']
+  ];
+  return dias.map(([key, label]) => {
+    const t = hs[key];
+    return t ? `${label} ${t.entrada}-${t.salida}` : `${label} desc.`;
+  }).join(' · ');
+}
+
 function renderAdminEmpleados() {
   const div = document.getElementById('adminListaEmpleados'); if(!div) return;
   const emps = db.empleados || [];
@@ -7489,7 +7605,7 @@ function renderAdminEmpleados() {
       <div style="flex:1">
         <div style="font-weight:700;font-size:14px">${e.nombre}</div>
         <div style="font-family:var(--mono);font-size:10px;color:var(--t3)">${e.rol}</div>
-        <div style="font-size:11px;color:var(--t3)">${e.horarioSemanal ? '🕐 Horario semanal cargado' : (e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida+' (horario viejo, sin días)' : '🕐 Sin turno asignado')}</div>
+        <div style="font-size:11px;color:var(--t3);line-height:1.5">${e.horarioSemanal ? resumenHorarioSemanal(e.horarioSemanal) : (e.turnoEntrada&&e.turnoSalida ? '🕐 '+e.turnoEntrada+' – '+e.turnoSalida+' (horario viejo, sin días)' : '🕐 Sin turno asignado')}</div>
       </div>
       <div style="display:flex;gap:6px">
         <button onclick='editarTurnoEmpleadoAdmin(${e.id},${JSON.stringify(e.nombre)},${JSON.stringify(e.horarioSemanal||null)})' style="background:none;border:1px solid var(--teal-bd);border-radius:6px;color:var(--teal);font-size:11px;padding:4px 8px;cursor:pointer;font-weight:700">🕐 Horario semanal</button>
@@ -7573,6 +7689,18 @@ async function guardarHorarioSemanal() {
   errEl.style.display = 'none';
   const res = await api('PUT', `/empleados/${_horSemEmpId}`, { horarioSemanal });
   if (res?.ok) {
+    // BUGFIX: renderAdminEmpleados() se llamaba acá mismo pero leyendo
+    // db.empleados, que todavía tenía el dato VIEJO — recién se actualiza
+    // cuando llega el broadcast DATOS_ACTUALIZADOS por WebSocket, que es
+    // asíncrono y puede tardar. Resultado: guardabas el horario, y si volvías
+    // a abrir el editor antes de que el WS diera la vuelta, veías los campos
+    // vacíos otra vez (parecía que no se había guardado nada). Ahora se
+    // actualiza la copia local con lo que YA devolvió este mismo PUT, sin
+    // esperar al WebSocket.
+    if (res.empleado && db.empleados) {
+      const idx = db.empleados.findIndex(e => e.id === _horSemEmpId);
+      if (idx >= 0) db.empleados[idx] = { ...db.empleados[idx], ...res.empleado };
+    }
     toast('✅ Horario semanal guardado', 'ok');
     document.getElementById('modalHorarioSemanal').classList.remove('open');
     renderAdminEmpleados();
