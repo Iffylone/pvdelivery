@@ -621,7 +621,12 @@ select option { background: var(--ink3); }
   position: fixed; bottom: 82px; left: 50%; transform: translateX(-50%) translateY(10px);
   padding: 10px 20px; border-radius: 24px; font-size: 13px; font-weight: 700;
   font-family: var(--sans); opacity: 0; transition: all .25s;
-  z-index: 300; pointer-events: none; white-space: nowrap; max-width: 92vw;
+  /* BUGFIX: era z-index:300 — cualquier modal abierto (los modales van de
+     8500 a 99999) lo tapaba por completo. El toast SÍ se disparaba, pero
+     quedaba invisible detrás, así que un error de validación mientras un
+     modal estaba abierto parecía "el sistema no responde" en vez de
+     mostrar el aviso. Ahora queda por encima de todo, siempre visible. */
+  z-index: 999999; pointer-events: none; white-space: nowrap; max-width: 92vw;
   text-align: center; box-shadow: var(--sh2); border: 1px solid transparent;
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
@@ -7678,6 +7683,14 @@ function formatear12hs(hhmm) {
   return `${h12}:${String(m).padStart(2,'0')} ${periodo}`;
 }
 
+// DEBE coincidir con VENTANAS_OPERATIVAS en servidor.js. Hoy el placeholder
+// es el mismo (08:00–23:30) para las 4 estaciones — si Rafael da los
+// valores reales de verano/otoño/primavera y cambian del lado del
+// servidor, hay que replicar el cambio acá también o el cliente va a
+// mostrar "válido" en verde para algo que el servidor va a rechazar.
+const VENTANA_LOCAL = { apertura: '08:00', cierre: '23:30' };
+function minJS(hhmm) { const [h,m] = hhmm.split(':').map(Number); return h*60+m; }
+
 // Estado visual claro por día: gris = descanso, verde = completo, rojo =
 // falta resolver. Antes un día vacío-sin-decidir y un día marcado Descanso
 // se veían casi iguales (solo un checkbox de 10px de diferencia) — ahora
@@ -7688,6 +7701,7 @@ function actualizarEstadoFilaHorSem(dia) {
   const lbl = document.getElementById(`horSemDescLbl-${dia}`);
   const previewEl = document.getElementById(`horSemPreview-${dia}`);
   if (!row || !previewEl) return;
+  actualizarTotalHorSem();
   const desc = document.getElementById(`horSemDesc-${dia}`)?.checked;
   const ent = document.getElementById(`horSemEnt-${dia}`)?.value;
   const sal = document.getElementById(`horSemSal-${dia}`)?.value;
@@ -7714,6 +7728,16 @@ function actualizarEstadoFilaHorSem(dia) {
       row.style.borderColor = 'var(--amber-bd)';
       lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
       previewEl.textContent = `⚠️ ${(durMin/60).toFixed(1)}hs — el turno tiene que durar entre 4 y 8hs`;
+      previewEl.style.color = 'var(--amber)';
+    } else if (minJS(ent) < minJS(VENTANA_LOCAL.apertura) || minJS(sal) > minJS(VENTANA_LOCAL.cierre)) {
+      // Mismo check que hace el servidor contra VENTANAS_OPERATIVAS — sin
+      // esto, un turno con orden y duración correctos igual podía verse
+      // "válido" acá y ser rechazado allá por empezar antes de que abra
+      // el local o terminar después de que cierra.
+      row.style.background = 'var(--amber-bg, rgba(245,158,11,0.08))';
+      row.style.borderColor = 'var(--amber-bd)';
+      lbl.style.background = 'transparent'; lbl.style.color = 'var(--t2)'; lbl.style.borderColor = 'var(--line)';
+      previewEl.textContent = `⚠️ Fuera del horario del local (${VENTANA_LOCAL.apertura}–${VENTANA_LOCAL.cierre})`;
       previewEl.style.color = 'var(--amber)';
     } else {
       row.style.background = 'var(--teal-bg)';
@@ -7752,12 +7776,16 @@ function actualizarTotalHorSem() {
     const mins = (sh*60+sm) - (eh*60+em);
     if (mins > 0) totalMin += mins;
   }
-  document.getElementById('horSemTotal').textContent = (totalMin/60).toFixed(1) + ' hs';
+  const totalHs = totalMin/60;
+  const totalEl = document.getElementById('horSemTotal');
+  totalEl.textContent = totalHs.toFixed(1) + ' hs' + (totalHs > 48 ? ' — supera el máximo legal (48hs)' : '');
+  totalEl.style.color = totalHs > 48 ? 'var(--rose)' : 'var(--teal)';
 }
 
 async function guardarHorarioSemanal() {
   const horarioSemanal = {};
   let algunDescanso = false;
+  let totalMin = 0;
   for (const dia of DIAS_SEMANA_UI) {
     const desc = document.getElementById(`horSemDesc-${dia}`).checked;
     if (desc) { horarioSemanal[dia] = null; algunDescanso = true; continue; }
@@ -7768,9 +7796,14 @@ async function guardarHorarioSemanal() {
     const durMin = (sh*60+sm) - (eh*60+em);
     if (durMin <= 0) { toast(`El ${DIAS_SEMANA_LABEL[dia]}: la salida (${formatear12hs(sal)}) tiene que ser más tarde que la entrada (${formatear12hs(ent)}), mismo día`, 'warn'); return; }
     if (durMin/60 < 4 || durMin/60 > 8) { toast(`El ${DIAS_SEMANA_LABEL[dia]} dura ${(durMin/60).toFixed(1)}hs — tiene que ser entre 4 y 8hs`, 'warn'); return; }
+    if (minJS(ent) < minJS(VENTANA_LOCAL.apertura) || minJS(sal) > minJS(VENTANA_LOCAL.cierre)) {
+      toast(`El ${DIAS_SEMANA_LABEL[dia]} queda fuera del horario del local (${VENTANA_LOCAL.apertura}–${VENTANA_LOCAL.cierre})`, 'warn'); return;
+    }
+    totalMin += durMin;
     horarioSemanal[dia] = { entrada: ent, salida: sal };
   }
   if (!algunDescanso) { toast('Tiene que haber al menos un día de descanso', 'warn'); return; }
+  if (totalMin/60 > 48) { toast(`El total semanal (${(totalMin/60).toFixed(1)}hs) supera el máximo legal de 48hs`, 'warn'); return; }
   const errEl = document.getElementById('horSemError');
   errEl.style.display = 'none';
   const res = await api('PUT', `/empleados/${_horSemEmpId}`, { horarioSemanal });
