@@ -2517,7 +2517,21 @@ document.addEventListener('visibilitychange', () => {
         if (savedPedidoId) {
           cliPedidoId = parseInt(savedPedidoId);
           const pedActivo = db.pedidos?.find(x => x.id === cliPedidoId);
-          if (pedActivo && pedActivo.estado !== 'entregado' && pedActivo.estado !== 'cancelado') {
+          // FIX RAÍZ de "la pantalla de tarjeta se cierra sola": esto corre
+          // en CADA reconexión de WS (cada vez que el watchdog detecta más
+          // de 90s sin mensajes, o cada vez que volvés de otra pestaña).
+          // Antes forzaba mostrarTracking() sin importar qué pantalla
+          // tuviera el cliente abierta — si estabas a mitad de tipear los
+          // datos de la tarjeta (algo que fácil tarda más de 90s: nombre,
+          // DNI, email, número, vencimiento), la reconexión te arrancaba de
+          // ahí y te tiraba de vuelta a "Tu pedido está en camino" sin que
+          // tocaras nada. Ahora, si el Brick de pago está en pantalla, se
+          // deja tranquilo — no se lo interrumpe.
+          const enPagoActivo = document.getElementById('cliPagoPantalla');
+          if (enPagoActivo) {
+            // Cliente en medio del pago con tarjeta: no tocar nada, ni la
+            // pantalla ni el localStorage — dejarlo terminar tranquilo.
+          } else if (pedActivo && pedActivo.estado !== 'entregado' && pedActivo.estado !== 'cancelado') {
             mostrarTracking(pedActivo);
             // Si ya está en camino, forzar tracking GPS inmediatamente
             if (pedActivo.estado === 'camino') {
@@ -2755,6 +2769,15 @@ function handle(msg) {
     // Si cliente o rider estaban bloqueados, ocultar pantalla de cerrado
     const cerradoDiv = document.getElementById('cliLocalCerrado');
     if (cerradoDiv) cerradoDiv.style.display = 'none';
+    // BUGFIX: esto solo liberaba al cliente. El rider tiene su propia
+    // pantalla de bloqueo ("Caja no abierta"), armada con innerHTML sobre
+    // #repLogin, y quedaba trabado ahí sin que este mismo aviso la tocara
+    // — tenía que salir y volver a entrar manualmente para que se
+    // refresque. Si el rider está viendo esa pantalla ahora mismo, se lo
+    // manda de nuevo a mostrarLoginRep() para que renderice el login real.
+    if (rol === 'rep' && document.getElementById('repLogin')?.innerHTML.includes('Caja no abierta')) {
+      mostrarLoginRep();
+    }
     if (rol === 'local') toast('🟢 Turno abierto — sistema activo para clientes y riders', 'ok');
   }
   if (msg.tipo === 'TURNO_CERRADO') {
@@ -3069,12 +3092,17 @@ function entrarLocal() {
 }
 async function mostrarLoginRep() {
   // ── Verificar turno activo ────────────────────────────────
-  if (db.turnoActivo === undefined) {
-    try {
-      const st = await fetch(getApiBase() + '/api/turno').then(r=>r.json());
-      db.turnoActivo = st.turnoActivo || false;
-    } catch(e) { db.turnoActivo = false; }
-  }
+  // BUGFIX: antes solo se preguntaba al servidor "si db.turnoActivo ===
+  // undefined" — es decir, UNA sola vez por carga de página. Si esa
+  // primera consulta caía en un momento en que el turno estaba cerrado,
+  // el rider quedaba con esa respuesta vieja para siempre en esa sesión,
+  // aunque caja abriera el turno cinco minutos después. Ahora se pregunta
+  // de nuevo cada vez que el rider toca "Soy Rider" — es una sola consulta
+  // liviana, no vale la pena cachearla acá.
+  try {
+    const st = await fetch(getApiBase() + '/api/turno').then(r=>r.json());
+    db.turnoActivo = st.turnoActivo || false;
+  } catch(e) { /* si falla la red, usar lo último que se sepa, no forzar a false */ if (db.turnoActivo === undefined) db.turnoActivo = false; }
   if (db.turnoActivo === false) {
     // Mostrar aviso directamente en repLogin
     document.getElementById('roleScreen').classList.remove('show');
@@ -4629,7 +4657,11 @@ async function resetDia() {
 }
 
 function abrirLimpiarPedidos() {
-  if (!esAdmin()) { toast('⛔ Solo el gerente puede limpiar pedidos','warn'); return; }
+  // BUGFIX: antes esto frenaba con un toast si no estabas logueado como
+  // admin, y nunca ofrecía forma de meter el PIN de gerente ahí mismo —
+  // exactamente el mismo bug que ya se había corregido antes para
+  // cancelar() pedidos, pero acá quedó sin aplicar. El modal abre siempre;
+  // el chequeo de PIN pasa a confirmarLimpiarPedidos(), igual que cancelar().
   document.getElementById('limpPedidosMsg').style.display = 'none';
   document.getElementById('modalLimpiarPedidos').classList.add('open');
 }
@@ -4647,7 +4679,50 @@ async function confirmarLimpiarPedidos() {
     return;
   }
   if (!confirm(`¿Borrar todos los pedidos en estado: ${estados.join(', ')}? No se puede deshacer.`)) return;
-  const res = await api('POST', '/pedidos/limpiar', { estados });
+
+  // Mismo patrón que cancelar(): si la sesión actual no es admin, pedir PIN
+  // de gerente/admin ACÁ MISMO, sin que el cajero tenga que cerrar sesión.
+  const nivel = sessionStorage.getItem('local_nivel');
+  let tokenAutorizante = null;
+  if (nivel !== 'admin' && rol !== 'admin_panel') {
+    const pin = prompt('Esta acción requiere autorización del gerente.\nIngresá el PIN de gerente (o de administrador):');
+    if (pin === null) return;
+    let autorizado = false, errorAutorizacion = null;
+    try {
+      const res1 = await fetch(getApiBase() + '/api/empleados/login', {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
+      });
+      const data1 = await res1.json();
+      if (data1.ok && data1.empleado?.rol === 'gerente') { autorizado = true; tokenAutorizante = data1.token; }
+      else if (data1.error) { errorAutorizacion = data1.error; }
+    } catch(e) {}
+    if (!autorizado) {
+      try {
+        const res2 = await fetch(getApiBase() + '/api/auth/login', {
+          method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ pin })
+        });
+        const data2 = await res2.json();
+        if (data2.ok && data2.rol === 'admin') { autorizado = true; tokenAutorizante = data2.token; }
+        else if (data2.error && !errorAutorizacion) { errorAutorizacion = data2.error; }
+      } catch(e) {}
+    }
+    if (!autorizado) {
+      msgEl.style.display = 'block'; msgEl.style.color = 'var(--rose)';
+      msgEl.textContent = '❌ ' + (errorAutorizacion || 'PIN incorrecto') + ' — no autorizado';
+      return;
+    }
+  }
+
+  let res;
+  if (tokenAutorizante) {
+    const r = await fetch(getApiBase() + '/api/pedidos/limpiar', {
+      method: 'POST', headers: { 'Content-Type':'application/json', 'Authorization': 'Bearer ' + tokenAutorizante },
+      body: JSON.stringify({ estados })
+    });
+    res = await r.json().catch(()=>({}));
+  } else {
+    res = await api('POST', '/pedidos/limpiar', { estados });
+  }
   if (res?.ok) {
     toast(`✅ ${res.borrados} pedido(s) borrado(s)`, 'ok');
     document.getElementById('modalLimpiarPedidos').classList.remove('open');
@@ -6228,6 +6303,13 @@ async function entrarClienteReal() {
       cliPedidoId = parseInt(savedPedidoId);
       // Buscar el pedido en la DB y mostrar tracking si no está entregado/cancelado
       setTimeout(() => {
+        // MISMO FIX que en el handler de visibilitychange, aplicado acá
+        // porque este código corre en la carga inicial de la página — si
+        // alguna vez la página entera se recarga (no solo el WebSocket)
+        // mientras el cliente está en medio del Brick de pago, esto
+        // corría sin ninguna protección y lo mandaba a Tracking igual.
+        const enPagoActivo = document.getElementById('cliPagoPantalla');
+        if (enPagoActivo) return;
         const pedActivo = db.pedidos?.find(x => x.id === cliPedidoId);
         if (pedActivo && pedActivo.estado !== 'entregado' && pedActivo.estado !== 'cancelado') {
           mostrarTracking(pedActivo);
@@ -6858,7 +6940,7 @@ async function mostrarBrickTarjeta(nom, tel, dir, notas, sub, publicKey) {
         visual: { style: { theme: 'dark' } }
       },
       callbacks: {
-        onReady: () => {},
+        onReady: () => { console.log('[MP Brick] onReady — el formulario de tarjeta cargó bien.'); },
         onError: (err) => { console.error('Brick error:', err); document.getElementById('mpBrickMsg').innerHTML = '<span style="color:var(--rose)">Error al cargar el formulario de pago. Recargá la página.</span>'; },
         onSubmit: async ({ selectedPaymentMethod, formData }) => {
           // FIX RAÍZ DE "Datos de pago incompletos" (confirmado contra la doc
