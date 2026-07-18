@@ -1016,6 +1016,22 @@ app.post('/api/turno/abrir', requireAuth(), async (q, r) => {
     ram.turnoApertura = new Date().toISOString();
     ram.turnoUsuario = usuario || 'Cajero';
     ram.turnoEfectivoInicial = parseFloat(efectivoInicial) || 0;
+    // FIX RAÍZ: antes esto solo vivía en la variable `ram` (memoria del
+    // proceso de Node) y NUNCA se guardaba en Postgres, aunque la base
+    // estuviera conectada y funcionando bien para todo lo demás. Cada
+    // reinicio del proceso — incluido cada deploy nuevo en Render, no solo
+    // los reinicios por inactividad del plan gratuito — volvía turnoActivo
+    // a `false` en silencio, cerrando el día sin que nadie lo pidiera. Se
+    // persiste acá, con el mismo patrón que ya usás para negocio/dirLocal.
+    if (useDB) {
+      await pool.query(`INSERT INTO config(key,value) VALUES
+        ('turnoActivo','true'),
+        ('turnoApertura',$1),
+        ('turnoUsuario',$2),
+        ('turnoEfectivoInicial',$3)
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,
+        [ram.turnoApertura, ram.turnoUsuario, String(ram.turnoEfectivoInicial)]);
+    }
     await bcast('TURNO_ABIERTO', { turnoActivo: true, turnoApertura: ram.turnoApertura, turnoUsuario: ram.turnoUsuario });
     console.log(`[TURNO] Abierto por ${ram.turnoUsuario} a las ${ram.turnoApertura}`);
     r.json({ ok: true, turnoApertura: ram.turnoApertura });
@@ -1039,6 +1055,14 @@ app.post('/api/turno/cerrar', requireAuth(), async (q, r) => {
     ram.turnoApertura = null;
     ram.turnoUsuario = null;
     ram.turnoEfectivoInicial = 0;
+    if (useDB) {
+      await pool.query(`INSERT INTO config(key,value) VALUES
+        ('turnoActivo','false'),
+        ('turnoApertura',''),
+        ('turnoUsuario',''),
+        ('turnoEfectivoInicial','0')
+        ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`);
+    }
     await bcast('TURNO_CERRADO', { turnoActivo: false, resumen: turnoData });
     console.log(`[TURNO] Cerrado — duración: apertura ${turnoData.apertura}`);
     r.json({ ok: true, resumen: turnoData });
@@ -1877,6 +1901,27 @@ async function main() {
   if (useDB) {
     try { await initDB(); }
     catch(e) { console.error('Error DB, usando RAM:', e.message); useDB = false; pool = null; }
+  }
+  if (useDB) {
+    // FIX RAÍZ (turno se cerraba solo en cada reinicio/deploy): al arrancar,
+    // releer el turno persistido en la tabla config y devolverlo a `ram`
+    // ANTES de aceptar tráfico. Si esto falta, cada reinicio de proceso —
+    // deploy, restart manual, o el spin-down por inactividad del plan
+    // gratuito de Render — hace que ram.turnoActivo vuelva a su valor
+    // inicial (false), aunque el turno real siguiera abierto.
+    try {
+      const rows = (await pool.query(
+        "SELECT key,value FROM config WHERE key IN ('turnoActivo','turnoApertura','turnoUsuario','turnoEfectivoInicial')"
+      )).rows;
+      const cfg = Object.fromEntries(rows.map(r => [r.key, r.value]));
+      if (cfg.turnoActivo === 'true') {
+        ram.turnoActivo = true;
+        ram.turnoApertura = cfg.turnoApertura || null;
+        ram.turnoUsuario = cfg.turnoUsuario || null;
+        ram.turnoEfectivoInicial = parseFloat(cfg.turnoEfectivoInicial) || 0;
+        console.log(`[TURNO] Recuperado de la base: abierto por ${ram.turnoUsuario} desde ${ram.turnoApertura}`);
+      }
+    } catch(e) { console.error('[TURNO] No se pudo recuperar el estado desde la base:', e.message); }
   }
   server.listen(PORT, () => {
     console.log('Iffyware Systems — ACTIVO en puerto ' + PORT);
