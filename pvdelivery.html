@@ -9,7 +9,23 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="IffyWare fasT">
 <meta name="description" content="Iffyware Systems Systems — Sistema profesional de gestión de pedidos">
-<link rel="manifest" id="pwa-manifest" href="/manifest.json">
+<script>
+// BUGFIX: instalar la app desde un link de cliente o rider instalaba un
+// ícono que abría la pantalla completa (con Caja y Admin visibles), porque
+// el manifest.json era uno solo compartido, con start_url="/" sin el
+// parámetro ?rol=. Este script elige el manifest correcto ANTES de que el
+// navegador lo procese, según el ?rol= que traiga la URL en ese momento —
+// así el ícono instalado abre directo en /?rol=cliente o /?rol=rider, y la
+// pantalla de selección de rol (que ya filtra bien por código) nunca llega
+// a mostrar Caja/Admin en esas instalaciones.
+(function(){
+  var _r = new URLSearchParams(location.search).get('rol');
+  var _href = '/manifest.json';
+  if (_r === 'cliente' || _r === 'pedido') _href = '/manifest-cliente.json';
+  else if (_r === 'rider' || _r === 'repartidor') _href = '/manifest-rider.json';
+  document.write('<link rel="manifest" id="pwa-manifest" href="' + _href + '">');
+})();
+</script>
 <title>Iffyware Systems</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://sdk.mercadopago.com/js/v2"></script>
