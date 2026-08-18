@@ -1808,7 +1808,7 @@ app.get('/api/asistencia/reporte', requireAuth('admin'), async (q, r) => {
 // servidor. pvdelivery.html y el logo nunca deben cachearse; los íconos
 // (que casi no cambian) sí pueden, con un tiempo corto.
 app.use((q, r, next) => {
-  if (q.path === '/' || q.path === '/pvdelivery.html' || q.path === '/logo-dev.jpg' || q.path === '/manifest.json' || q.path === '/sw.js') {
+  if (q.path === '/' || q.path === '/pvdelivery.html' || q.path === '/logo-dev.jpg' || q.path === '/manifest.json' || q.path === '/manifest-cliente.json' || q.path === '/manifest-rider.json' || q.path === '/sw.js') {
     r.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   }
   next();
