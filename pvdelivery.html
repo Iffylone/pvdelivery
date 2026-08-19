@@ -8,7 +8,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="IffyWare fasT">
-<meta name="description" content="Iffyware Systems PV Delivery— Sistema profesional de gestión de pedidos">
+<meta name="description" content="Iffyware Systems Systems — Sistema profesional de gestión de pedidos">
 <script>
 // BUGFIX: instalar la app desde un link de cliente o rider instalaba un
 // ícono que abría la pantalla completa (con Caja y Admin visibles), porque
@@ -1264,31 +1264,6 @@ select option { background: var(--ink3); }
         <div style="font-size:11px;color:var(--t3)">Estos datos aparecerán al cliente cuando elige pagar por transferencia.</div>
       </div>
       <button class="btn btn-ghost" style="margin-top:8px" onclick="guardarConfig()">Guardar</button>
-      <div style="margin-top:12px;padding:12px;background:var(--ink3);border:1px solid var(--line);border-radius:8px">
-        <div style="font-family:var(--mono);font-size:10px;color:var(--teal);text-transform:uppercase;letter-spacing:.08em;margin-bottom:10px">💰 Sistema de Comisiones para Riders</div>
-        <div style="font-size:12px;color:var(--t3);margin-bottom:10px">Elegí cómo se calcula la comisión del repartidor por cada entrega.</div>
-        <div class="fl">
-          <label>Tipo de comisión</label>
-          <select id="cfgComTipo" onchange="toggleComisionConfig()">
-            <option value="por_km">📏 Por kilómetro ($0,60/metro = $600/km por defecto)</option>
-            <option value="fija">💰 Comisión fija por entrega</option>
-          </select>
-        </div>
-        <div id="cfgComPorKm">
-          <div class="fl">
-            <label>Tarifa por metro (en $)</label>
-            <input id="cfgComPorMetro" type="number" step="0.01" min="0" placeholder="0.60" value="0.60">
-          </div>
-          <div style="font-size:11px;color:var(--t3);margin-top:-6px;margin-bottom:8px">Ejemplo: 0.60 → $600/km · 1.20 → $1200/km · 0.80 → $800/km</div>
-        </div>
-        <div id="cfgComFija" style="display:none">
-          <div class="fl">
-            <label>Monto fijo por entrega ($)</label>
-            <input id="cfgComFijaVal" type="number" min="0" placeholder="1000">
-          </div>
-        </div>
-        <button class="btn btn-ghost" style="margin-top:4px" onclick="guardarComisionConfig()">💾 Guardar comisiones</button>
-      </div>
       <div style="margin-top:14px;padding:12px;background:var(--ink3);border:1px solid var(--line);border-radius:8px">
         <div style="font-family:var(--mono);font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px">Código único de este local</div>
         <div id="cfgCodigoLocal" style="font-family:var(--mono);font-size:24px;font-weight:800;color:var(--teal);letter-spacing:.2em">—</div>
@@ -1868,6 +1843,31 @@ select option { background: var(--ink3); }
       <button class="btn btn-teal" onclick="guardarConfigAdmin()">💾 Guardar configuración</button>
     </div>
     <div class="card">
+      <div class="card-title">💰 Sistema de Comisiones para Riders</div>
+      <div style="font-size:12px;color:var(--t3);margin-bottom:10px">Elegí cómo se calcula la comisión del repartidor por cada entrega.</div>
+      <div class="fl">
+        <label>Tipo de comisión</label>
+        <select id="adminCfgComTipo" onchange="toggleComisionConfigAdmin()">
+          <option value="por_km">📏 Por kilómetro ($0,60/metro = $600/km por defecto)</option>
+          <option value="fija">💰 Comisión fija por entrega</option>
+        </select>
+      </div>
+      <div id="adminCfgComPorKm">
+        <div class="fl">
+          <label>Tarifa por metro (en $)</label>
+          <input id="adminCfgComPorMetro" type="number" step="0.01" min="0" placeholder="0.60" value="0.60">
+        </div>
+        <div style="font-size:11px;color:var(--t3);margin-top:-6px;margin-bottom:8px">Ejemplo: 0.60 → $600/km · 1.20 → $1200/km · 0.80 → $800/km</div>
+      </div>
+      <div id="adminCfgComFija" style="display:none">
+        <div class="fl">
+          <label>Monto fijo por entrega ($)</label>
+          <input id="adminCfgComFijaVal" type="number" min="0" placeholder="1000">
+        </div>
+      </div>
+      <button class="btn btn-ghost" style="margin-top:4px" onclick="guardarConfigAdmin()">💾 Guardar comisiones</button>
+    </div>
+    <div class="card">
       <div class="card-title">Logo del negocio (visible a clientes)</div>
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
         <div id="adminLogoPreview" style="width:64px;height:64px;border-radius:14px;background:var(--ink3);border:2px dashed var(--line);display:flex;align-items:center;justify-content:center;font-size:26px;overflow:hidden;flex-shrink:0">🏪</div>
@@ -2443,6 +2443,15 @@ window.addEventListener('load', () => {
         return;
       }
 
+      // Restaurar el authToken desde el backup si el SO limpió sessionStorage
+      // (pasa seguido en Android/iOS al volver de background o pantalla apagada
+      // por un rato largo — sin esto, el rol se restauraba "de mentira": se
+      // veía el nombre pero cada llamada a la API fallaba con 401 y terminaba
+      // pateando de nuevo a la pantalla de login).
+      if (!sessionStorage.getItem('authToken') && localStorage.getItem('authToken_bk')) {
+        sessionStorage.setItem('authToken', localStorage.getItem('authToken_bk'));
+      }
+
       const savedRol = sessionStorage.getItem('rol')
         || (localStorage.getItem('local_auth_bk')==='1' ? 'local' : null)
         || (localStorage.getItem('rep_nombre') ? 'rep' : null)
@@ -2751,7 +2760,7 @@ function handle(msg) {
         if (rep && rep.activo !== false) {
           miRepNom = rep.nombre; miRepId = rep.id;
           fetch(getApiBase() + '/api/repartidores/' + savedId + '/verificar')
-            .then(r => r.json()).then(d => { if (d.ok && d.token) sessionStorage.setItem('authToken', d.token); })
+            .then(r => r.json()).then(d => { if (d.ok && d.token) { sessionStorage.setItem('authToken', d.token); localStorage.setItem('authToken_bk', d.token); } })
             .catch(()=>{});
           activarRep();
         }
@@ -3220,9 +3229,10 @@ async function verificarIdRep() {
   // que no haya token nuevavía — se pide aparte, sin bloquear el login.
   if (repTokenTemp) {
     sessionStorage.setItem('authToken', repTokenTemp);
+    localStorage.setItem('authToken_bk', repTokenTemp);
   } else {
     fetch(getApiBase() + '/api/repartidores/' + idIngresado + '/verificar')
-      .then(r => r.json()).then(d => { if (d.ok && d.token) sessionStorage.setItem('authToken', d.token); })
+      .then(r => r.json()).then(d => { if (d.ok && d.token) { sessionStorage.setItem('authToken', d.token); localStorage.setItem('authToken_bk', d.token); } })
       .catch(()=>{});
   }
 
@@ -3451,7 +3461,7 @@ async function confirmarLoginLocal() {
     errEl.style.display = 'block';
     return;
   }
-  if (tokenObtenido) sessionStorage.setItem('authToken', tokenObtenido);
+  if (tokenObtenido) { sessionStorage.setItem('authToken', tokenObtenido); localStorage.setItem('authToken_bk', tokenObtenido); }
   document.getElementById('localClaveError').style.display = 'none';
   sessionStorage.setItem('local_auth', '1');
   sessionStorage.setItem('local_nivel', nivel);
@@ -3708,7 +3718,9 @@ function cerrarSesionRep() {
   detenerGPS();
   rol = null; miRepId = null; miRepNom = null;
   localStorage.removeItem('rep_id'); localStorage.removeItem('rep_nombre');
+  localStorage.removeItem('authToken_bk');
   sessionStorage.removeItem('rol');
+  sessionStorage.removeItem('authToken');
   if(ws) ws.close();
   document.getElementById('appRep').classList.remove('show');
   // Mostrar pantalla de cierre completo
@@ -3739,6 +3751,8 @@ function cerrarJornadaLocal() {
   localStorage.removeItem('local_auth_bk');
   localStorage.removeItem('local_nivel_bk');
   localStorage.removeItem('local_usuario_bk');
+  localStorage.removeItem('authToken_bk');
+  sessionStorage.removeItem('authToken');
   if(ws) ws.close();
   document.getElementById('appLocal').classList.remove('show');
   // Pantalla de cierre — no volver a roleScreen
@@ -4246,15 +4260,9 @@ function renderConfig() {
   const codEl = document.getElementById('cfgCodigoLocal');
   if (codEl) codEl.textContent = db.codigoLocal || '—';
 
-  // Cargar config comisiones
-  const comTipoEl = document.getElementById('cfgComTipo');
-  if (comTipoEl) comTipoEl.value = db.comisionTipo || 'por_km';
-  const comPorMetroEl = document.getElementById('cfgComPorMetro');
-  if (comPorMetroEl) comPorMetroEl.value = db.comisionPorMetro || 0.60;
-  const comFijaEl = document.getElementById('cfgComFijaVal');
-  if (comFijaEl) comFijaEl.value = db.comisionFija || 0;
-  toggleComisionConfig();
-  actualizarInfoComision();
+  // Nota: el módulo de comisiones se movió exclusivamente a Config de Admin
+  // (el backend ya exigía rol admin para guardarlo — no tiene sentido que
+  // Caja lo vea ni pueda tocarlo, evita fricción con los riders).
 
   // Rellenar enlaces directos
   const base = window.location.origin + window.location.pathname;
@@ -5670,24 +5678,8 @@ function guardarApiPago() {
 }
 
 // ── COMISION CONFIG ───────────────────────────────────────
-function toggleComisionConfig() {
-  const tipo = document.getElementById('cfgComTipo')?.value;
-  document.getElementById('cfgComPorKm').style.display = tipo === 'por_km' ? 'block' : 'none';
-  document.getElementById('cfgComFija').style.display = tipo === 'fija' ? 'block' : 'none';
-}
-
-async function guardarComisionConfig() {
-  const tipo = document.getElementById('cfgComTipo')?.value || 'por_km';
-  const porMetro = parseFloat(document.getElementById('cfgComPorMetro')?.value || '0.60') || 0.60;
-  const fija = parseFloat(document.getElementById('cfgComFijaVal')?.value || '0') || 0;
-  await api('PUT', '/config', { comisionTipo: tipo, comisionPorMetro: porMetro, comisionFija: fija });
-  toast('✅ Comisiones guardadas', 'ok');
-  // Actualizar local
-  db.comisionTipo = tipo;
-  db.comisionPorMetro = porMetro;
-  db.comisionFija = fija;
-  actualizarInfoComision();
-}
+// (edición movida exclusivamente a Admin — ver toggleComisionConfigAdmin()
+// y guardarConfigAdmin(). Caja ya no edita ni ve esto.)
 
 function actualizarInfoComision() {
   const cfg = getTarifaActual();
@@ -8172,12 +8164,22 @@ async function confirmarImportExcel() {
   toast('Importación completada: '+ok+' productos','ok');
 }
 
+function toggleComisionConfigAdmin() {
+  const tipo = document.getElementById('adminCfgComTipo')?.value;
+  document.getElementById('adminCfgComPorKm').style.display = tipo === 'por_km' ? 'block' : 'none';
+  document.getElementById('adminCfgComFija').style.display = tipo === 'fija' ? 'block' : 'none';
+}
+
 function renderAdminConfig() {
   actualizarBrandingProducto();
   const neg = document.getElementById('adminCfgNeg'); if(neg) neg.value = db.negocio||'';
   const dir = document.getElementById('adminCfgDirLocal'); if(dir) dir.value = db.dirLocal||'';
   const cbu = document.getElementById('adminCfgCbu'); if(cbu) cbu.value = db.cbuLocal||'';
   const alias = document.getElementById('adminCfgAlias'); if(alias) alias.value = db.aliasLocal||'';
+  const comTipo = document.getElementById('adminCfgComTipo'); if(comTipo) comTipo.value = db.comisionTipo||'por_km';
+  const comPorMetro = document.getElementById('adminCfgComPorMetro'); if(comPorMetro) comPorMetro.value = db.comisionPorMetro||0.60;
+  const comFija = document.getElementById('adminCfgComFijaVal'); if(comFija) comFija.value = db.comisionFija||0;
+  toggleComisionConfigAdmin();
   const logo = localStorage.getItem('negocio_logo');
   if(logo) { const prev=document.getElementById('adminLogoPreview'); if(prev){prev.innerHTML=`<img src="${logo}" style="width:100%;height:100%;object-fit:cover;border-radius:14px">`;} }
   // Enlaces directos por rol (para compartir en campañas de marketing)
@@ -8193,8 +8195,16 @@ async function guardarConfigAdmin() {
   const dir = document.getElementById('adminCfgDirLocal').value.trim();
   const cbu = document.getElementById('adminCfgCbu').value.trim();
   const alias = document.getElementById('adminCfgAlias').value.trim();
-  const res = await api('PUT','/config',{negocio:n,dirLocal:dir,cbuLocal:cbu,aliasLocal:alias});
-  if(res?.ok!==false){ db.negocio=n; db.dirLocal=dir; db.cbuLocal=cbu; db.aliasLocal=alias; toast('✅ Configuración guardada','ok'); }
+  const comTipo = document.getElementById('adminCfgComTipo')?.value || 'por_km';
+  const comPorMetro = parseFloat(document.getElementById('adminCfgComPorMetro')?.value || '0.60') || 0.60;
+  const comFija = parseFloat(document.getElementById('adminCfgComFijaVal')?.value || '0') || 0;
+  const res = await api('PUT','/config',{negocio:n,dirLocal:dir,cbuLocal:cbu,aliasLocal:alias,comisionTipo:comTipo,comisionPorMetro:comPorMetro,comisionFija:comFija});
+  if(res?.ok!==false){
+    db.negocio=n; db.dirLocal=dir; db.cbuLocal=cbu; db.aliasLocal=alias;
+    db.comisionTipo=comTipo; db.comisionPorMetro=comPorMetro; db.comisionFija=comFija;
+    if (typeof actualizarInfoComision === 'function') actualizarInfoComision();
+    toast('✅ Configuración guardada','ok');
+  }
   else toast('Error al guardar','warn');
 }
 
